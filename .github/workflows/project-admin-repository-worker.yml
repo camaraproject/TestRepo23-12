@@ -38,15 +38,15 @@ jobs:
           echo "Testing CAMARA_TOKEN directly..."
           
           # Test basic authentication
-          curl -s -H "Authorization: Bearer ${{ secrets.CAMARA_TOKEN }}" https://api.github.com/user | jq '.login // .message'
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/user | jq '.login // .message'
           
           # Test organization access
           echo "Testing organization access..."
-          curl -s -H "Authorization: Bearer ${{ secrets.CAMARA_TOKEN }}" https://api.github.com/orgs/camaraproject | jq '.login // .message'
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/orgs/camaraproject | jq '.login // .message'
           
           # Test repository access
           echo "Testing repository access..."
-          curl -s -H "Authorization: Bearer ${{ secrets.CAMARA_TOKEN }}" https://api.github.com/repos/${{ inputs.repository_full_name }} | jq '.full_name // .message'
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/repos/${{ inputs.repository_full_name }} | jq '.full_name // .message'
         env:
           CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 

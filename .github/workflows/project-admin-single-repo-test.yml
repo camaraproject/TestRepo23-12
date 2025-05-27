@@ -40,7 +40,7 @@ jobs:
         id: check-repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.CAMARA_TOKEN }}
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             const org = 'camaraproject';
             const repoName = '${{ github.event.inputs.repository_name }}';
@@ -88,27 +88,6 @@ jobs:
                 core.setFailed(`❌ Error accessing repository: ${error.message}`);
               }
             }
-            // Disable wiki
-            try {
-              await github.rest.repos.update({
-                owner: org,
-                repo: repoName,
-                has_wiki: false
-              });
-              console.log('✅ Wiki disabled successfully');
-              core.exportVariable('status', 'wiki-disabled');
-            } catch (updateError) {
-              if (updateError.status === 403) {
-                core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${org}/${repo}`);
-              } else if (updateError.status === 404) {
-                core.setFailed(`❌ Repository not found: ${org}/${repoName}`);
-              } else if (updateError.status === 422) {
-                core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
-              } else {
-                core.setFailed(`❌ Failed to disable wiki: ${updateError.message} (HTTP ${updateError.status})`);
-              }
-              throw updateError;
-            }
 
       - name: Display repository information
         if: steps.check-repo.outputs.exists == 'true'
@@ -124,8 +103,87 @@ jobs:
           echo "**Language**: $(echo $INFO | jq -r '.language // "N/A"')" >> $GITHUB_STEP_SUMMARY
           echo "**Stars**: $(echo $INFO | jq -r '.stars')" >> $GITHUB_STEP_SUMMARY
 
-  execute-test:
+  debug-token:
     needs: validate-repository
+    if: needs.validate-repository.outputs.repository_exists == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug Token Usage (Calling Workflow)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            console.log('=== Token Debug Information (CALLING WORKFLOW) ===');
+            
+            try {
+              // Test basic authentication
+              const user = await github.rest.users.getAuthenticated();
+              console.log('✅ Authenticated as:', user.data.login);
+              console.log('- User type:', user.data.type);
+              
+              // Test if we can access the target repository
+              const [owner, repo] = '${{ needs.validate-repository.outputs.repository_full_name }}'.split('/');
+              console.log(`\nTesting access to ${owner}/${repo}:`);
+              
+              try {
+                const repoInfo = await github.rest.repos.get({
+                  owner: owner,
+                  repo: repo
+                });
+                console.log('✅ Can read repository information');
+                console.log('- Repository:', repoInfo.data.full_name);
+                console.log('- Private:', repoInfo.data.private);
+              } catch (repoError) {
+                console.log('❌ Cannot access repository:', repoError.message);
+                console.log('- Status:', repoError.status);
+              }
+              
+              // Test Contents API access (the failing operation)
+              try {
+                await github.rest.repos.getContent({
+                  owner: owner,
+                  repo: repo,
+                  path: 'README.md'  // Try a common file
+                });
+                console.log('✅ Can read file contents via API');
+              } catch (contentError) {
+                console.log('❌ Cannot read contents via API:', contentError.message);
+                console.log('- Status:', contentError.status);
+                
+                if (contentError.status === 403) {
+                  console.log('🔍 This suggests token lacks Contents permission or cross-org access');
+                }
+              }
+              
+            } catch (authError) {
+              console.log('❌ Authentication failed:', authError.message);
+              console.log('- Status:', authError.status);
+              
+              if (authError.status === 401) {
+                console.log('🔍 This suggests CAMARA_TOKEN secret is not being used');
+              }
+            }
+
+      - name: Simple Token Test (Calling Workflow)
+        run: |
+          echo "=== Simple Token Test (CALLING WORKFLOW) ==="
+          
+          # Test basic authentication
+          echo "Testing basic authentication..."
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/user | jq '.login // .message'
+          
+          # Test organization access
+          echo "Testing organization access..."
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/orgs/camaraproject | jq '.login // .message'
+          
+          # Test repository access
+          echo "Testing repository access..."
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/repos/${{ needs.validate-repository.outputs.repository_full_name }} | jq '.full_name // .message'
+        env:
+          CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
+
+  execute-test:
+    needs: [validate-repository, debug-token]
     if: needs.validate-repository.outputs.repository_exists == 'true'
     uses: ./.github/workflows/project-admin-repository-worker.yml
     with:
@@ -136,7 +194,7 @@ jobs:
       dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
 
   test-summary:
-    needs: [validate-repository, execute-test]
+    needs: [validate-repository, debug-token, execute-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
