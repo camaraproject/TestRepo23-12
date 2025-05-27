@@ -137,6 +137,9 @@ This progressive approach ensures:
 
 ## Token Requirements & Permissions
 
+**Critical: Reusable Workflow Secret Passing**
+GitHub does NOT automatically pass secrets to reusable workflows. The workflows explicitly pass `CAMARA_TOKEN` using the `secrets` parameter to ensure the worker workflow has proper authentication.
+
 **GitHub Actions Workflow Permissions:**
 Workflows request minimal required permissions:
 - `contents: write` - For reading/writing CODEOWNERS files

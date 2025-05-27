@@ -192,6 +192,8 @@ jobs:
       default_branch: ${{ needs.validate-repository.outputs.default_branch }}
       operation: ${{ github.event.inputs.operation }}
       dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
+    secrets:
+      CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 
   test-summary:
     needs: [validate-repository, debug-token, execute-test]
