@@ -88,6 +88,27 @@ jobs:
                 core.setFailed(`❌ Error accessing repository: ${error.message}`);
               }
             }
+            // Disable wiki
+            try {
+              await github.rest.repos.update({
+                owner: owner,
+                repo: repo,
+                has_wiki: false
+              });
+              console.log('✅ Wiki disabled successfully');
+              core.exportVariable('status', 'wiki-disabled');
+            } catch (updateError) {
+              if (updateError.status === 403) {
+                core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${owner}/${repo}`);
+              } else if (updateError.status === 404) {
+                core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+              } else if (updateError.status === 422) {
+                core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
+              } else {
+                core.setFailed(`❌ Failed to disable wiki: ${updateError.message} (HTTP ${updateError.status})`);
+              }
+              throw updateError;
+            }
 
       - name: Display repository information
         if: steps.check-repo.outputs.exists == 'true'
