@@ -91,7 +91,7 @@ jobs:
             // Disable wiki
             try {
               await github.rest.repos.update({
-                owner: owner,
+                owner: org,
                 repo: repo,
                 has_wiki: false
               });
@@ -99,9 +99,9 @@ jobs:
               core.exportVariable('status', 'wiki-disabled');
             } catch (updateError) {
               if (updateError.status === 403) {
-                core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${owner}/${repo}`);
+                core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${org}/${repo}`);
               } else if (updateError.status === 404) {
-                core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+                core.setFailed(`❌ Repository not found: ${org}/${repo}`);
               } else if (updateError.status === 422) {
                 core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
               } else {
