@@ -1,0 +1,438 @@
+name: Repository Worker
+
+on:
+  workflow_call:
+    inputs:
+      repository_name:
+        required: true
+        type: string
+      repository_full_name:
+        required: true
+        type: string
+      default_branch:
+        required: true
+        type: string
+      operation:
+        required: true
+        type: string
+      dry_run:
+        required: true
+        type: boolean
+
+jobs:
+  execute-operation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # For reading/writing CODEOWNERS files
+      pull-requests: write  # For creating pull requests
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository_full_name }}
+          token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ inputs.default_branch }}
+
+      - name: Simple Token Test
+        run: |
+          echo "Testing CAMARA_TOKEN directly..."
+          
+          # Test basic authentication
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/user | jq '.login // .message'
+          
+          # Test organization access
+          echo "Testing organization access..."
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/orgs/camaraproject | jq '.login // .message'
+          
+          # Test repository access
+          echo "Testing repository access..."
+          curl -s -H "Authorization: token $CAMARA_TOKEN" https://api.github.com/repos/${{ inputs.repository_full_name }} | jq '.full_name // .message'
+        env:
+          CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
+
+      - name: Debug Token Usage
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            // The token is passed to the action but not directly accessible
+            // Let's test what we can access and determine token type by behavior
+            
+            console.log('=== Token Debug Information ===');
+            
+            try {
+              // Test basic authentication
+              const user = await github.rest.users.getAuthenticated();
+              console.log('✅ Authenticated as:', user.data.login);
+              console.log('- User type:', user.data.type);
+              
+              // Test if we can access the target repository
+              const [owner, repo] = '${{ inputs.repository_full_name }}'.split('/');
+              console.log(`\nTesting access to ${owner}/${repo}:`);
+              
+              try {
+                const repoInfo = await github.rest.repos.get({
+                  owner: owner,
+                  repo: repo
+                });
+                console.log('✅ Can read repository information');
+                console.log('- Repository:', repoInfo.data.full_name);
+                console.log('- Private:', repoInfo.data.private);
+              } catch (repoError) {
+                console.log('❌ Cannot access repository:', repoError.message);
+                console.log('- Status:', repoError.status);
+              }
+              
+              // Test Contents API access (the failing operation)
+              try {
+                await github.rest.repos.getContent({
+                  owner: owner,
+                  repo: repo,
+                  path: 'README.md'  // Try a common file
+                });
+                console.log('✅ Can read file contents via API');
+              } catch (contentError) {
+                console.log('❌ Cannot read contents via API:', contentError.message);
+                console.log('- Status:', contentError.status);
+                
+                if (contentError.status === 403) {
+                  console.log('🔍 This suggests token lacks Contents permission or cross-org access');
+                }
+              }
+              
+            } catch (authError) {
+              console.log('❌ Authentication failed:', authError.message);
+              console.log('- Status:', authError.status);
+              
+              if (authError.status === 401) {
+                console.log('🔍 This suggests CAMARA_TOKEN secret is not being used');
+              }
+            }
+            
+            // Check if we're using the fallback token
+            console.log('\n=== Secret Analysis ===');
+            console.log('Expected: Using CAMARA_TOKEN (your custom token)');
+            console.log('Reality: Will be determined by permission test results above');
+        env:
+          CAMARA_TOKEN_EXISTS: ${{ secrets.CAMARA_TOKEN != '' }}
+
+      - name: Check Repository Permissions
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = '${{ inputs.repository_full_name }}'.split('/');
+            
+            // Only do strict permission check for wiki operations
+            if ('${{ inputs.operation }}' !== 'disable-wiki') {
+              return;
+            }
+            
+            try {
+              // Test basic repository access
+              const repoInfo = await github.rest.repos.get({
+                owner: owner,
+                repo: repo
+              });
+              
+              // Try to determine admin access level
+              let hasAdminAccess = false;
+              
+              try {
+                const collaboratorPermission = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: owner,
+                  repo: repo,
+                  username: context.actor
+                });
+                hasAdminAccess = collaboratorPermission.data.permission === 'admin';
+              } catch (collabError) {
+                // Try organization membership check
+                try {
+                  const orgMembership = await github.rest.orgs.getMembershipForUser({
+                    org: owner,
+                    username: context.actor
+                  });
+                  hasAdminAccess = orgMembership.data.role === 'admin';
+                } catch (orgError) {
+                  // If all checks fail, proceed but warn
+                  console.log('⚠️ Could not verify admin permissions - proceeding with wiki operation');
+                  hasAdminAccess = true;
+                }
+              }
+              
+              if (!hasAdminAccess) {
+                core.warning(`⚠️ Admin permissions may be required for wiki operations on ${owner}/${repo}`);
+              }
+              
+            } catch (error) {
+              console.log('⚠️ Permission check failed - proceeding with operation');
+            }
+
+      - name: Execute Operation - Disable Wiki
+        if: inputs.operation == 'disable-wiki'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = '${{ inputs.repository_full_name }}'.split('/');
+            
+            try {
+              // Check if wiki is enabled
+              const repoInfo = await github.rest.repos.get({
+                owner: owner,
+                repo: repo
+              });
+              
+              if (!repoInfo.data.has_wiki) {
+                console.log('✅ Wiki is already disabled');
+                core.exportVariable('status', 'no-change');
+                return;
+              }
+              
+              // Check if wiki has content
+              let hasWikiContent = false;
+              try {
+                await github.request('GET /repos/{owner}/{repo}/wiki', {
+                  owner: owner,
+                  repo: repo
+                });
+                hasWikiContent = true;
+              } catch (wikiError) {
+                hasWikiContent = wikiError.status !== 404;
+              }
+              
+              if (hasWikiContent) {
+                console.log('⚠️ Wiki contains content - skipping disable for safety');
+                core.exportVariable('status', 'wiki-has-content');
+                return;
+              }
+              
+              if (${{ inputs.dry_run }}) {
+                console.log('🧪 DRY RUN: Would disable wiki (currently enabled but empty)');
+                core.exportVariable('status', 'would-disable-wiki');
+                return;
+              }
+              
+              // Disable wiki
+              try {
+                await github.rest.repos.update({
+                  owner: owner,
+                  repo: repo,
+                  has_wiki: false
+                });
+                console.log('✅ Wiki disabled successfully');
+                core.exportVariable('status', 'wiki-disabled');
+              } catch (updateError) {
+                if (updateError.status === 403) {
+                  core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${owner}/${repo}`);
+                } else if (updateError.status === 404) {
+                  core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+                } else if (updateError.status === 422) {
+                  core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
+                } else {
+                  core.setFailed(`❌ Failed to disable wiki: ${updateError.message} (HTTP ${updateError.status})`);
+                }
+                throw updateError;
+              }
+              
+            } catch (error) {
+              if (!error.message.includes('Permission denied') && !error.message.includes('Failed to disable wiki')) {
+                core.setFailed(`❌ Wiki operation failed: ${error.message}`);
+              }
+            }
+
+      - name: Execute Operation - Add Changelog CODEOWNERS
+        if: inputs.operation == 'add-changelog-codeowners'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = '${{ inputs.repository_full_name }}'.split('/');
+            const defaultBranch = '${{ inputs.default_branch }}';
+            
+            const changelogLines = `# The following line ensures that the release-management_reviewers team will automatically added as reviewers
+            # if a pull requests is changing the CHANGELOG.MD (aka "release PR") and that such PRs can only be merged with an approval from a team member.
+            /CHANGELOG.MD @camaraproject/release-management_reviewers`;
+            
+            try {
+              let currentContent = '';
+              let fileExists = false;
+              
+              // Get existing CODEOWNERS file
+              try {
+                const fileResponse = await github.rest.repos.getContent({
+                  owner: owner,
+                  repo: repo,
+                  path: 'CODEOWNERS',
+                  ref: defaultBranch
+                });
+                
+                if (fileResponse.data.content) {
+                  currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf8');
+                  fileExists = true;
+                } else {
+                  fileExists = false;
+                }
+              } catch (getError) {
+                if (getError.status === 404) {
+                  core.warning(`Repository ${owner}/${repo} does not have a CODEOWNERS file`);
+                  core.exportVariable('status', 'no-codeowners-file');
+                  return;
+                } else {
+                  throw getError;
+                }
+              }
+              
+              if (!fileExists) {
+                core.warning(`Repository ${owner}/${repo} does not have a CODEOWNERS file`);
+                core.exportVariable('status', 'no-codeowners-file');
+                return;
+              }
+              
+              // Check if rule already exists
+              if (currentContent.includes('/CHANGELOG.MD')) {
+                console.log('✅ CHANGELOG.MD rule already exists');
+                core.exportVariable('status', 'no-change');
+                return;
+              }
+              
+              const newContent = currentContent.trim() + '\n\n' + changelogLines;
+              
+              if (${{ inputs.dry_run }}) {
+                console.log('🧪 DRY RUN: Would create pull request to add CHANGELOG.MD rule');
+                core.exportVariable('status', 'would-create-pr');
+                return;
+              }
+              
+              // Get base commit SHA
+              const branchResponse = await github.rest.repos.getBranch({
+                owner: owner,
+                repo: repo,
+                branch: defaultBranch
+              });
+              const baseSha = branchResponse.data.commit.sha;
+              
+              // Create feature branch
+              const timestamp = Date.now();
+              const branchName = `camara-admin/add-changelog-codeowners-${timestamp}`;
+              
+              await github.rest.git.createRef({
+                owner: owner,
+                repo: repo,
+                ref: `refs/heads/${branchName}`,
+                sha: baseSha
+              });
+              
+              // Update file on feature branch
+              await github.rest.repos.createOrUpdateFileContents({
+                owner: owner,
+                repo: repo,
+                path: 'CODEOWNERS',
+                message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
+                content: Buffer.from(newContent).toString('base64'),
+                branch: branchName
+              });
+              
+              // Create pull request
+              const prResponse = await github.rest.pulls.create({
+                owner: owner,
+                repo: repo,
+                title: 'chore: add CHANGELOG.MD to CODEOWNERS for release management',
+                head: branchName,
+                base: defaultBranch,
+                body: `## CAMARA Project Admin Update
+              
+              This pull request adds the CHANGELOG.MD file to CODEOWNERS to ensure that:
+              - The release-management_reviewers team is automatically added as reviewers for release PRs
+              - Release PRs (those changing CHANGELOG.MD) require approval from the release management team
+              
+              **Changes:**
+              - Added \`/CHANGELOG.MD @camaraproject/release-management_reviewers\` to CODEOWNERS
+              
+              🤖 Generated by project-admin workflow`
+              });
+              
+              console.log(`✅ Pull request created: ${prResponse.data.html_url}`);
+              core.exportVariable('status', 'pr-created');
+              core.exportVariable('pr_number', prResponse.data.number);
+              core.exportVariable('pr_url', prResponse.data.html_url);
+              
+            } catch (error) {
+              if (error.status === 403) {
+                core.setFailed(`❌ Permission denied: Insufficient permissions for ${owner}/${repo}`);
+              } else if (error.status === 404) {
+                core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+              } else if (error.status === 422 && error.message.includes('Reference already exists')) {
+                core.setFailed(`❌ Branch conflict: A similar update may already be in progress`);
+              } else {
+                core.setFailed(`❌ Failed to create pull request: ${error.message} (HTTP ${error.status})`);
+              }
+              throw error;
+            }
+
+      - name: Check for changes
+        id: check-changes
+        run: |
+          # This step is now mainly for wiki operations or future git-based operations
+          # CODEOWNERS operation uses GitHub API directly and doesn't need git commits
+          if [ "${{ inputs.operation }}" == "add-changelog-codeowners" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "CODEOWNERS operation uses GitHub API - no git changes to commit"
+          else
+            if git diff --quiet && git diff --cached --quiet; then
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+            else
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "Changes detected:"
+              git status --porcelain
+            fi
+          fi
+
+      - name: Commit and Push Changes
+        if: steps.check-changes.outputs.has_changes == 'true' && inputs.dry_run == false
+        run: |
+          # Set git config locally as backup
+          git config user.name "CAMARA Admin Bot"
+          git config user.email "admin-bot@camaraproject.org"
+          
+          git add .
+          git commit -m "chore: automated CAMARA project update - ${{ inputs.operation }}
+
+          Applied via project-admin workflow
+          Repository: ${{ inputs.repository_name }}
+          Operation: ${{ inputs.operation }}"
+          
+          git push origin ${{ inputs.default_branch }}
+
+      - name: Create summary
+        run: |
+          echo "## Repository: ${{ inputs.repository_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Operation**: ${{ inputs.operation }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status**: ${{ env.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run**: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.operation }}" == "add-changelog-codeowners" ]; then
+            echo "**Method**: GitHub Pull Request" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.dry_run }}" == "true" ]; then
+              echo "**Note**: Dry run - no pull request created" >> $GITHUB_STEP_SUMMARY
+            else
+              case "${{ env.status }}" in
+                "pr-created")
+                  echo "**PR**: #${{ env.pr_number }} - ${{ env.pr_url }}" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                "no-change")
+                  echo "**Note**: CHANGELOG.MD rule already exists" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                "no-codeowners-file")
+                  echo "**Note**: ⚠️ No CODEOWNERS file found" >> $GITHUB_STEP_SUMMARY
+                  ;;
+              esac
+            fi
+          else
+            echo "**Has Changes**: ${{ steps.check-changes.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.dry_run }}" == "true" ]; then
+              echo "**Note**: Dry run - no changes committed" >> $GITHUB_STEP_SUMMARY
+            elif [ "${{ steps.check-changes.outputs.has_changes }}" == "true" ]; then
+              echo "**Note**: Changes committed and pushed" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
