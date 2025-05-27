@@ -18,6 +18,10 @@ on:
       dry_run:
         required: true
         type: boolean
+      commit_strategy:
+        required: false
+        type: string
+        default: 'pull-request'
     secrets:
       CAMARA_TOKEN:
         required: true
@@ -252,6 +256,7 @@ jobs:
           script: |
             const [owner, repo] = '${{ inputs.repository_full_name }}'.split('/');
             const defaultBranch = '${{ inputs.default_branch }}';
+            const commitStrategy = '${{ inputs.commit_strategy }}';
             
             const changelogLines = `# The following line ensures that the release-management_reviewers team will automatically added as reviewers
             # if a pull requests is changing the CHANGELOG.MD (aka "release PR") and that such PRs can only be merged with an approval from a team member.
@@ -259,9 +264,10 @@ jobs:
             
             try {
               let currentContent = '';
+              let currentSha = null;
               let fileExists = false;
               
-              // Get existing CODEOWNERS file
+              // Get existing CODEOWNERS file and its SHA
               try {
                 const fileResponse = await github.rest.repos.getContent({
                   owner: owner,
@@ -272,6 +278,7 @@ jobs:
                 
                 if (fileResponse.data.content) {
                   currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf8');
+                  currentSha = fileResponse.data.sha;  // ← Store the SHA!
                   fileExists = true;
                 } else {
                   fileExists = false;
@@ -302,10 +309,43 @@ jobs:
               const newContent = currentContent.trim() + '\n\n' + changelogLines;
               
               if (${{ inputs.dry_run }}) {
-                console.log('🧪 DRY RUN: Would create pull request to add CHANGELOG.MD rule');
-                core.exportVariable('status', 'would-create-pr');
+                console.log(`🧪 DRY RUN: Would apply changes using strategy: ${commitStrategy}`);
+                core.exportVariable('status', commitStrategy === 'pull-request' ? 'would-create-pr' : 'would-commit-or-pr');
                 return;
               }
+              
+              // Execute based on commit strategy
+              if (commitStrategy === 'direct-with-pr-fallback') {
+                // Try direct commit first, fallback to PR
+                try {
+                  console.log('Attempting direct commit...');
+                  const directCommitResponse = await github.rest.repos.createOrUpdateFileContents({
+                    owner: owner,
+                    repo: repo,
+                    path: 'CODEOWNERS',
+                    message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
+                    content: Buffer.from(newContent).toString('base64'),
+                    sha: currentSha,
+                    branch: defaultBranch
+                  });
+                  
+                  console.log('✅ Direct commit successful');
+                  core.exportVariable('status', 'direct-commit');
+                  core.exportVariable('commit_sha', directCommitResponse.data.commit.sha);
+                  return;
+                  
+                } catch (directError) {
+                  if (directError.status === 403) {
+                    console.log('⚠️ Direct commit blocked (likely branch protection) - falling back to pull request');
+                    // Continue to PR creation below
+                  } else {
+                    throw directError;
+                  }
+                }
+              }
+              
+              // Create pull request (either as primary strategy or fallback)
+              console.log('Creating pull request...');
               
               // Get base commit SHA
               const branchResponse = await github.rest.repos.getBranch({
@@ -326,13 +366,14 @@ jobs:
                 sha: baseSha
               });
               
-              // Update file on feature branch
+              // Update file on feature branch (using the SHA from the original file)
               await github.rest.repos.createOrUpdateFileContents({
                 owner: owner,
                 repo: repo,
                 path: 'CODEOWNERS',
                 message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
                 content: Buffer.from(newContent).toString('base64'),
+                sha: currentSha,  // ← Use the SHA we stored earlier!
                 branch: branchName
               });
               
@@ -352,11 +393,13 @@ jobs:
               **Changes:**
               - Added \`/CHANGELOG.MD @camaraproject/release-management_reviewers\` to CODEOWNERS
               
+              **Commit Strategy:** ${commitStrategy === 'direct-with-pr-fallback' ? 'Direct commit failed (branch protection), used PR fallback' : 'Pull request (default strategy)'}
+              
               🤖 Generated by project-admin workflow`
               });
               
               console.log(`✅ Pull request created: ${prResponse.data.html_url}`);
-              core.exportVariable('status', 'pr-created');
+              core.exportVariable('status', commitStrategy === 'direct-with-pr-fallback' ? 'pr-fallback' : 'pr-created');
               core.exportVariable('pr_number', prResponse.data.number);
               core.exportVariable('pr_url', prResponse.data.html_url);
               
@@ -368,7 +411,7 @@ jobs:
               } else if (error.status === 422 && error.message.includes('Reference already exists')) {
                 core.setFailed(`❌ Branch conflict: A similar update may already be in progress`);
               } else {
-                core.setFailed(`❌ Failed to create pull request: ${error.message} (HTTP ${error.status})`);
+                core.setFailed(`❌ Failed to apply changes: ${error.message} (HTTP ${error.status})`);
               }
               throw error;
             }
@@ -415,12 +458,21 @@ jobs:
           echo "**Dry Run**: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
           
           if [ "${{ inputs.operation }}" == "add-changelog-codeowners" ]; then
-            echo "**Method**: GitHub Pull Request" >> $GITHUB_STEP_SUMMARY
+            echo "**Method**: ${{ inputs.commit_strategy }}" >> $GITHUB_STEP_SUMMARY
             if [ "${{ inputs.dry_run }}" == "true" ]; then
-              echo "**Note**: Dry run - no pull request created" >> $GITHUB_STEP_SUMMARY
+              echo "**Note**: Dry run - no changes applied" >> $GITHUB_STEP_SUMMARY
             else
               case "${{ env.status }}" in
+                "direct-commit")
+                  echo "**Result**: Direct commit successful" >> $GITHUB_STEP_SUMMARY
+                  echo "**Commit**: ${{ env.commit_sha }}" >> $GITHUB_STEP_SUMMARY
+                  ;;
                 "pr-created")
+                  echo "**Result**: Pull request created" >> $GITHUB_STEP_SUMMARY
+                  echo "**PR**: #${{ env.pr_number }} - ${{ env.pr_url }}" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                "pr-fallback")
+                  echo "**Result**: Direct commit failed, pull request created as fallback" >> $GITHUB_STEP_SUMMARY
                   echo "**PR**: #${{ env.pr_number }} - ${{ env.pr_url }}" >> $GITHUB_STEP_SUMMARY
                   ;;
                 "no-change")
