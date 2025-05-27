@@ -71,16 +71,23 @@ This progressive approach ensures:
    - Check/uncheck Incubating API Repositories
    - Check/uncheck Working Group Repositories  
    - Check/uncheck Other Repositories
-4. Configure additional repository filters if needed
-5. Start with dry-run mode enabled
-6. Review results across selected repositories
-7. Re-run with dry-run disabled for live execution
+4. For CODEOWNERS operations, select commit strategy:
+   - **pull-request**: Always create pull requests (safest, default)
+   - **direct-with-pr-fallback**: Try direct commit, use PR if blocked by branch protection
+5. Configure additional repository filters if needed
+6. Start with dry-run mode enabled
+7. Review results across selected repositories
+8. Re-run with dry-run disabled for live execution
 
 **Category Selection Examples:**
 - **API-only changes**: Select only Sandbox and Incubating API repositories
 - **Governance updates**: Select only Working Group and Other repositories
 - **Universal changes**: Select all categories (default behavior)
 - **Targeted rollout**: Start with Sandbox repositories, then expand to others
+
+**Commit Strategy Guidance:**
+- **pull-request**: Recommended for production use, ensures proper review process
+- **direct-with-pr-fallback**: Faster for repositories without branch protection, but falls back gracefully
 
 ## Available Operations
 
@@ -97,7 +104,9 @@ This progressive approach ensures:
 - ✅ Clear status reporting: Different outcomes for various scenarios
 
 **add-changelog-codeowners:**
-- ✅ Uses GitHub Pull Request approach for branch-protected repositories
+- ✅ Two commit strategies available:
+  - **pull-request** (default): Always creates pull requests for changes
+  - **direct-with-pr-fallback**: Attempts direct commit, falls back to PR if blocked by branch protection
 - ✅ Smart detection: Skips if CHANGELOG.MD rule already exists
 - ✅ Only modifies existing CODEOWNERS files (won't create new ones)
 - ✅ Preserves existing CODEOWNERS content
@@ -107,7 +116,10 @@ This progressive approach ensures:
 
 **Status Codes:**
 - `no-change`: CHANGELOG.MD rule already exists
-- `pr-created`: Pull request created with CHANGELOG.MD rule addition
+- `direct-commit`: Successfully committed directly to default branch
+- `pr-created`: Pull request created (pull-request strategy)
+- `pr-fallback`: Direct commit failed, pull request created as fallback
+- `would-commit-or-pr`: Dry run would attempt direct commit with PR fallback
 - `would-create-pr`: Dry run would create pull request
 - `no-codeowners-file`: Repository missing CODEOWNERS file (skipped with warning)
 
@@ -195,6 +207,9 @@ Workflows request minimal required permissions:
 
 **CODEOWNERS Operation Status Codes:**
 - `no-change`: CHANGELOG.MD rule already exists
-- `pr-created`: Pull request created with CHANGELOG.MD rule addition
-- `would-create-pr`: Dry run would create pull request  
+- `direct-commit`: Successfully committed directly to default branch
+- `pr-created`: Pull request created (pull-request strategy)
+- `pr-fallback`: Direct commit failed, pull request created as fallback
+- `would-commit-or-pr`: Dry run would attempt direct commit with PR fallback
+- `would-create-pr`: Dry run would create pull request
 - `no-codeowners-file`: Repository missing CODEOWNERS file (operation skipped with warning)

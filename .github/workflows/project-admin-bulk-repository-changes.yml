@@ -58,6 +58,15 @@ on:
         required: false
         type: string
         default: 'Governance,.github'
+      
+      commit_strategy:
+        description: 'How to apply CODEOWNERS changes'
+        required: false
+        type: choice
+        options:
+          - 'pull-request'
+          - 'direct-with-pr-fallback'
+        default: 'pull-request'
 
 jobs:
   get-repositories:
@@ -199,6 +208,9 @@ jobs:
           default_branch: ${{ matrix.repository.default_branch }}
           operation: ${{ github.event.inputs.operation }}
           dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
+          commit_strategy: ${{ github.event.inputs.commit_strategy }}
+        secrets:
+          CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 
   summary:
     needs: [get-repositories, execute-changes]
