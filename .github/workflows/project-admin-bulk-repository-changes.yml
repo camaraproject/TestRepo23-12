@@ -1,4 +1,4 @@
-name: Single Repository Test
+name: Bulk Repository Changes
 
 permissions:
   contents: write       # For CODEOWNERS file operations
@@ -7,11 +7,6 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      repository_name:
-        description: 'Target repository name (e.g., DeviceStatus)'
-        required: true
-        type: string
-      
       operation:
         description: 'Operation to perform'
         required: true
@@ -22,156 +17,231 @@ on:
         default: 'disable-wiki'
       
       dry_run:
-        description: 'Run in dry-run mode (recommended for testing)'
+        description: 'Run in dry-run mode (no actual changes)'
         required: true
         type: boolean
         default: true
+      
+      # Repository Category Selection
+      include_sandbox_repos:
+        description: 'Include Sandbox API Repositories'
+        required: false
+        type: boolean
+        default: true
+      
+      include_incubating_repos:
+        description: 'Include Incubating API Repositories'
+        required: false
+        type: boolean
+        default: true
+      
+      include_working_group_repos:
+        description: 'Include Working Group Repositories'
+        required: false
+        type: boolean
+        default: true
+      
+      include_other_repos:
+        description: 'Include Other Repositories'
+        required: false
+        type: boolean
+        default: true
+      
+      repository_filter:
+        description: 'Repository name pattern (leave empty for all repos)'
+        required: false
+        type: string
+        default: ''
+      
+      exclude_repos:
+        description: 'Comma-separated list of repos to exclude'
+        required: false
+        type: string
+        default: 'Governance,.github'
 
 jobs:
-  validate-repository:
+  get-repositories:
     runs-on: ubuntu-latest
     outputs:
-      repository_exists: ${{ steps.check-repo.outputs.exists }}
-      repository_full_name: ${{ steps.check-repo.outputs.full_name }}
-      default_branch: ${{ steps.check-repo.outputs.default_branch }}
-      repository_info: ${{ steps.check-repo.outputs.info }}
+      repositories: ${{ steps.get-repos.outputs.repositories }}
+      total_count: ${{ steps.get-repos.outputs.total_count }}
     steps:
-      - name: Check if repository exists
-        id: check-repo
+      - name: Get organization repositories
+        id: get-repos
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
-            const org = 'camaraproject';
-            const repoName = '${{ github.event.inputs.repository_name }}';
+            const org = 'camaraproject';  // Hardcoded for CAMARA project
+            const filterPattern = '${{ github.event.inputs.repository_filter }}';
+            const excludeRepos = '${{ github.event.inputs.exclude_repos }}'.split(',').map(r => r.trim()).filter(r => r);
             
-            try {
-              const response = await github.rest.repos.get({
-                owner: org,
-                repo: repoName
+            // Category selection inputs
+            const includeSandbox = ${{ fromJson(github.event.inputs.include_sandbox_repos) }};
+            const includeIncubating = ${{ fromJson(github.event.inputs.include_incubating_repos) }};
+            const includeWorkingGroup = ${{ fromJson(github.event.inputs.include_working_group_repos) }};
+            const includeOther = ${{ fromJson(github.event.inputs.include_other_repos) }};
+            
+            console.log(`Getting repositories for organization: ${org}`);
+            console.log(`Filter pattern: ${filterPattern}`);
+            console.log(`Exclude repos: ${excludeRepos}`);
+            console.log(`Include categories:`);
+            console.log(`  - Sandbox API Repositories: ${includeSandbox}`);
+            console.log(`  - Incubating API Repositories: ${includeIncubating}`);
+            console.log(`  - Working Group Repositories: ${includeWorkingGroup}`);
+            console.log(`  - Other Repositories: ${includeOther}`);
+            
+            let allRepos = [];
+            let page = 1;
+            
+            while (true) {
+              const response = await github.rest.repos.listForOrg({
+                org: org,
+                type: 'all',
+                sort: 'name',
+                per_page: 100,
+                page: page
               });
               
-              const repo = response.data;
-              
-              core.setOutput('exists', 'true');
-              core.setOutput('full_name', repo.full_name);
-              core.setOutput('default_branch', repo.default_branch);
-              
-              const info = {
-                name: repo.name,
-                private: repo.private,
-                archived: repo.archived,
-                language: repo.language,
-                stars: repo.stargazers_count,
-                last_updated: repo.updated_at
-              };
-              core.setOutput('info', JSON.stringify(info));
-              
-              console.log(`✅ Repository found: ${repo.full_name}`);
-              console.log(`   Default branch: ${repo.default_branch}`);
-              console.log(`   Language: ${repo.language || 'N/A'}`);
-              console.log(`   Stars: ${repo.stargazers_count}`);
-              console.log(`   Private: ${repo.private}`);
-              console.log(`   Archived: ${repo.archived}`);
-              
-              if (repo.archived) {
-                core.warning(`Repository ${repo.full_name} is archived - changes may not be possible`);
-              }
-              
-            } catch (error) {
-              core.setOutput('exists', 'false');
-              if (error.status === 404) {
-                core.setFailed(`❌ Repository ${org}/${repoName} not found`);
-              } else if (error.status === 403) {
-                core.setFailed(`❌ Access denied to repository ${org}/${repoName} - check token permissions`);
+              if (response.data.length === 0) break;
+              allRepos = allRepos.concat(response.data);
+              page++;
+            }
+            
+            // Function to categorize repository based on topics
+            function categorizeRepository(topics) {
+              if (topics.includes('sandbox-api-repository')) {
+                return 'sandbox';
+              } else if (topics.includes('incubating-api-repository')) {
+                return 'incubating';
+              } else if (topics.includes('workinggroup')) {
+                return 'working-group';
               } else {
-                core.setFailed(`❌ Error accessing repository: ${error.message}`);
+                return 'other';
               }
             }
+            
+            // Filter repositories based on criteria and categories
+            let filteredRepos = [];
+            let categoryCounts = { sandbox: 0, incubating: 0, 'working-group': 0, other: 0 };
+            
+            for (const repo of allRepos) {
+              // Skip archived repositories
+              if (repo.archived) continue;
+              
+              // Skip excluded repositories  
+              if (excludeRepos.includes(repo.name)) continue;
+              
+              // Apply name filter pattern if provided
+              if (filterPattern && !repo.name.includes(filterPattern)) continue;
+              
+              // Categorize repository based on topics
+              const category = categorizeRepository(repo.topics || []);
+              categoryCounts[category]++;
+              
+              // Check if this category is selected for inclusion
+              let includeThisRepo = false;
+              switch (category) {
+                case 'sandbox':
+                  includeThisRepo = includeSandbox;
+                  break;
+                case 'incubating':
+                  includeThisRepo = includeIncubating;
+                  break;
+                case 'working-group':
+                  includeThisRepo = includeWorkingGroup;
+                  break;
+                case 'other':
+                  includeThisRepo = includeOther;
+                  break;
+              }
+              
+              if (includeThisRepo) {
+                filteredRepos.push(repo);
+              }
+            }
+            
+            const repositories = filteredRepos.map(repo => ({
+              name: repo.name,
+              full_name: repo.full_name,
+              default_branch: repo.default_branch,
+              category: categorizeRepository(repo.topics || [])
+            }));
+            
+            console.log(`\nRepository counts by category:`);
+            console.log(`  - Sandbox API Repositories: ${categoryCounts.sandbox}`);
+            console.log(`  - Incubating API Repositories: ${categoryCounts.incubating}`);
+            console.log(`  - Working Group Repositories: ${categoryCounts['working-group']}`);
+            console.log(`  - Other Repositories: ${categoryCounts.other}`);
+            console.log(`\nSelected ${repositories.length} repositories for processing`);
+            
+            core.setOutput('repositories', JSON.stringify(repositories));
+            core.setOutput('total_count', repositories.length);
 
-      - name: Display repository information
-        if: steps.check-repo.outputs.exists == 'true'
-        run: |
-          echo "## Repository Information" >> $GITHUB_STEP_SUMMARY
-          echo "**Repository**: ${{ steps.check-repo.outputs.full_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Default Branch**: ${{ steps.check-repo.outputs.default_branch }}" >> $GITHUB_STEP_SUMMARY
-          
-          # Parse and display additional info
-          INFO='${{ steps.check-repo.outputs.info }}'
-          echo "**Private**: $(echo $INFO | jq -r '.private')" >> $GITHUB_STEP_SUMMARY
-          echo "**Archived**: $(echo $INFO | jq -r '.archived')" >> $GITHUB_STEP_SUMMARY
-          echo "**Language**: $(echo $INFO | jq -r '.language // "N/A"')" >> $GITHUB_STEP_SUMMARY
-          echo "**Stars**: $(echo $INFO | jq -r '.stars')" >> $GITHUB_STEP_SUMMARY
+  execute-changes:
+    needs: get-repositories
+    if: fromJson(needs.get-repositories.outputs.total_count) > 0
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.get-repositories.outputs.repositories) }}
+      max-parallel: 5
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflows
+        uses: actions/checkout@v4
 
-  execute-test:
-    needs: validate-repository
-    if: needs.validate-repository.outputs.repository_exists == 'true'
-    uses: ./.github/workflows/project-admin-repository-worker.yml
-    with:
-      repository_name: ${{ github.event.inputs.repository_name }}
-      repository_full_name: ${{ needs.validate-repository.outputs.repository_full_name }}
-      default_branch: ${{ needs.validate-repository.outputs.default_branch }}
-      operation: ${{ github.event.inputs.operation }}
-      dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
+      - name: Execute repository changes
+        uses: ./.github/workflows/project-admin-repository-worker.yml
+        with:
+          repository_name: ${{ matrix.repository.name }}
+          repository_full_name: ${{ matrix.repository.full_name }}
+          default_branch: ${{ matrix.repository.default_branch }}
+          operation: ${{ github.event.inputs.operation }}
+          dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
 
-  test-summary:
-    needs: [validate-repository, execute-test]
+  summary:
+    needs: [get-repositories, execute-changes]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Generate test summary
+      - name: Generate summary
         uses: actions/github-script@v7
         with:
           script: |
-            const repoExists = '${{ needs.validate-repository.outputs.repository_exists }}' === 'true';
-            const testResult = '${{ needs.execute-test.result }}';
-            const repoName = '${{ github.event.inputs.repository_name }}';
+            const totalRepos = ${{ needs.get-repositories.outputs.total_count }};
             const operation = '${{ github.event.inputs.operation }}';
             const dryRun = ${{ fromJson(github.event.inputs.dry_run) }};
             
-            let summary = `# Single Repository Test Results\n\n`;
+            // Category selections
+            const includeSandbox = ${{ fromJson(github.event.inputs.include_sandbox_repos) }};
+            const includeIncubating = ${{ fromJson(github.event.inputs.include_incubating_repos) }};
+            const includeWorkingGroup = ${{ fromJson(github.event.inputs.include_working_group_repos) }};
+            const includeOther = ${{ fromJson(github.event.inputs.include_other_repos) }};
             
-            if (!repoExists) {
-              summary += `❌ **Repository Not Found**: camaraproject/${repoName}\n\n`;
-              summary += `Please check:\n`;
-              summary += `- Repository name is correct\n`;
-              summary += `- Repository exists in the camaraproject organization\n`;
-              summary += `- You have access permissions\n`;
-            } else {
-              summary += `✅ **Repository**: camaraproject/${repoName}\n`;
-              summary += `🔧 **Operation**: ${operation}\n`;
-              summary += `🧪 **Mode**: ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}\n`;
-              summary += `📊 **Result**: ${testResult}\n\n`;
-              
-              if (testResult === 'success') {
-                summary += `### ✅ Test Completed Successfully\n\n`;
-                if (dryRun) {
-                  summary += `This was a dry run - no actual changes were made to the repository.\n`;
-                  summary += `You can now run this operation in live mode or proceed with bulk execution.\n`;
-                } else {
-                  summary += `Changes have been applied to the repository.\n`;
-                }
-              } else {
-                summary += `### ❌ Test Failed\n\n`;
-                summary += `Please check the workflow logs for detailed error information.\n`;
-              }
-              
-              summary += `\n### Next Steps\n`;
-              if (dryRun && testResult === 'success') {
-                summary += `1. Review the changes shown in the worker job\n`;
-                summary += `2. Test with live execution on this single repository\n`;
-                summary += `3. Run bulk dry-run across all repositories\n`;
-                summary += `4. Execute bulk changes across the organization\n`;
-              } else if (!dryRun && testResult === 'success') {
-                summary += `1. Verify changes in the repository\n`;
-                summary += `2. Run bulk dry-run to test across all repositories\n`;
-                summary += `3. Execute bulk changes if satisfied\n`;
-              } else {
-                summary += `1. Check error logs and fix issues\n`;
-                summary += `2. Re-run single repository test\n`;
-                summary += `3. Proceed with bulk operations once successful\n`;
-              }
-            }
+            let selectedCategories = [];
+            if (includeSandbox) selectedCategories.push('Sandbox API');
+            if (includeIncubating) selectedCategories.push('Incubating API');
+            if (includeWorkingGroup) selectedCategories.push('Working Group');
+            if (includeOther) selectedCategories.push('Other');
+            
+            const summary = `
+            ## Bulk Repository Changes Summary
+            
+            **Operation**: ${operation}
+            **Mode**: ${dryRun ? 'DRY RUN' : 'LIVE'}
+            **Total Repositories Processed**: ${totalRepos}
+            **Repository Categories**: ${selectedCategories.join(', ')}
+            **Execution Status**: ${{ needs.execute-changes.result }}
+            
+            ${dryRun ? '⚠️ This was a dry run - no actual changes were made.' : '✅ Changes have been applied to repositories.'}
+            
+            ### Categories Processed:
+            ${includeSandbox ? '✅' : '❌'} Sandbox API Repositories
+            ${includeIncubating ? '✅' : '❌'} Incubating API Repositories  
+            ${includeWorkingGroup ? '✅' : '❌'} Working Group Repositories
+            ${includeOther ? '✅' : '❌'} Other Repositories
+            `;
             
             core.summary.addRaw(summary);
             await core.summary.write();
