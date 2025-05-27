@@ -92,7 +92,7 @@ jobs:
             try {
               await github.rest.repos.update({
                 owner: org,
-                repo: repo,
+                repo: repoName,
                 has_wiki: false
               });
               console.log('✅ Wiki disabled successfully');
@@ -101,7 +101,7 @@ jobs:
               if (updateError.status === 403) {
                 core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${org}/${repo}`);
               } else if (updateError.status === 404) {
-                core.setFailed(`❌ Repository not found: ${org}/${repo}`);
+                core.setFailed(`❌ Repository not found: ${org}/${repoName}`);
               } else if (updateError.status === 422) {
                 core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
               } else {
