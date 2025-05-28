@@ -9,7 +9,8 @@ The system consists of three core workflows that work together:
 ### 1. Single Repository Test (`project-admin-single-repo-test.yml`)
 - Tests operations on individual repositories before bulk execution
 - Validates repository access and permissions
-- Provides detailed feedback on what changes would be made
+- Provides **structured result display** with detailed feedback and next steps guidance
+- Shows the same result format as bulk operations for consistency
 - **Always start here** when testing new operations
 
 ### 2. Repository Worker (`project-admin-repository-worker.yml`) 
@@ -17,12 +18,13 @@ The system consists of three core workflows that work together:
 - Called by both single test and bulk workflows
 - Handles all the actual file modifications and git operations
 - Supports dry-run mode for safe testing
+- **Generates standardized result metadata** for consistent reporting
 
 ### 3. Bulk Repository Changes (`project-admin-bulk-repository-changes.yml`)
 - Orchestrates operations across multiple repositories simultaneously  
 - Includes repository filtering and exclusion capabilities
 - Runs operations in parallel with configurable limits
-- Provides comprehensive execution summaries
+- Provides comprehensive execution summaries with **enhanced result categorization**
 
 ## File Structure
 
@@ -61,7 +63,7 @@ This progressive approach ensures:
 2. Enter repository name (e.g., "DeviceStatus")
 3. Select operation type
 4. Enable dry-run mode
-5. Review results before proceeding
+5. **Review structured results** with detailed feedback and next steps guidance
 
 **Execute Bulk Changes:**
 1. Go to Actions → "Bulk Repository Changes"  
@@ -100,7 +102,7 @@ This progressive approach ensures:
 
 ### Current Operations
 - **disable-wiki**: Safely disables GitHub wiki on repositories (only if wiki has no content)
-- **add-changelog-codeowners**: Adds release management team as reviewers for CHANGELOG.MD changes
+- **add-changelog-codeowners**: Adds release management team as reviewers for CHANGELOG file changes (both .MD and .md variants)
 
 ### Operation Details
 
@@ -111,24 +113,22 @@ This progressive approach ensures:
 - ✅ Clear status reporting: Different outcomes for various scenarios
 
 **add-changelog-codeowners:**
+- ✅ **Comprehensive coverage**: Handles both `CHANGELOG.MD` and `CHANGELOG.md` filename variants
 - ✅ Two commit strategies available:
   - **pull-request** (default): Always creates pull requests for changes
   - **direct-with-warning**: Attempts direct commit, issues warning if blocked (no PR created)
-- ✅ Smart detection: Skips if CHANGELOG.MD rule already exists
+- ✅ Smart detection: Skips if CHANGELOG rules already exist (either variant)
 - ✅ Only modifies existing CODEOWNERS files (won't create new ones)
 - ✅ Preserves existing CODEOWNERS content
 - ✅ Creates feature branch with unique timestamp-based naming (for PR strategy)
 - ✅ Generates descriptive pull requests with proper context (for PR strategy)
 - ⚠️ Issues warning if CODEOWNERS file is missing (requires investigation)
 
-**Status Codes:**
-- `no-change`: CHANGELOG.MD rule already exists
-- `direct-commit`: Successfully committed directly to default branch
-- `direct-commit-blocked`: Direct commit blocked by branch protection (warning issued)
-- `pr-created`: Pull request created
-- `would-commit-or-warn`: Dry run would attempt direct commit with warning fallback
-- `would-create-pr`: Dry run would create pull request
-- `no-codeowners-file`: Repository missing CODEOWNERS file (skipped with warning)
+**CODEOWNERS Rules Added:**
+```
+/CHANGELOG.MD @camaraproject/release-management_reviewers
+/CHANGELOG.md @camaraproject/release-management_reviewers
+```
 
 ### Repository Filtering
 - **Repository Categories**: Select which types of repositories to include:
@@ -140,6 +140,45 @@ This progressive approach ensures:
 - **Exclude Repositories**: Skip specific repositories (default: 'Governance,.github')
 - **Auto-exclusions**: Automatically skips archived repositories
 
+## Result System Architecture
+
+### Modular Result Processing
+The system uses a **modular result architecture** that separates operation logic from display formatting:
+
+- **Worker Workflow**: Generates standardized result metadata
+- **Bulk Workflow**: Handles display formatting and emoji assignment
+- **Single Test Workflow**: Uses same display logic for consistency
+
+### Standardized Result Types
+
+| Result Type | Meaning | Emoji | Requires Attention |
+|-------------|---------|-------|-------------------|
+| `success` | Operation completed successfully with changes | ✅ | No |
+| `no-change` | Operation completed but no changes needed | 📊 | No |
+| `warning` | Operation skipped due to safety/prerequisites | ⚠️ | Yes |
+| `would-action` | Dry run showing what would happen | 🧪 | No |
+| `error` | Operation failed due to error | ❌ | Yes |
+
+### Result Schema
+Each operation generates structured metadata:
+
+```json
+{
+  "result_type": "success|no-change|warning|would-action|error",
+  "details": "Human-readable description of what happened",
+  "operation_status": "Specific status code for debugging",
+  "action_taken": "What action was actually performed",
+  "repository": "Repository name",
+  "operation": "Operation type",
+  "dry_run": true|false,
+  "commit_strategy": "Strategy used",
+  "pr_number": "Pull request number (if applicable)",
+  "pr_url": "Pull request URL (if applicable)",
+  "commit_sha": "Commit SHA (if applicable)",
+  "timestamp": "ISO timestamp"
+}
+```
+
 ## Key Features
 
 ### Safety Mechanisms
@@ -148,9 +187,11 @@ This progressive approach ensures:
 - **Parallel execution limits**: Prevent overwhelming GitHub API
 - **Fail-fast disabled**: Continue processing other repos if one fails
 
-### Monitoring & Feedback
-- **Detailed summaries**: Clear reporting of what was changed where
+### Enhanced Monitoring & Feedback
+- **Structured result display**: Consistent formatting across single and bulk operations
+- **Items requiring attention**: Automatic flagging of warnings and errors
 - **Progress tracking**: Monitor execution across multiple repositories
+- **Next steps guidance**: Contextual recommendations based on result types
 - **Error handling**: Graceful handling of permission issues and failures
 - **Change detection**: Only commit when actual changes are made
 
@@ -190,28 +231,48 @@ Workflows request minimal required permissions:
 3. **Filter wisely**: Use repository filters to target specific subsets when appropriate
 4. **Monitor execution**: Watch for failures and address them before continuing
 5. **Verify results**: Check a few repositories manually after bulk operations
+6. **Review attention items**: Address warnings and errors before proceeding with bulk operations
 
 ## Results and Reporting
+
+### **Single Repository Test Results**
+The single repository test now provides **enhanced structured results**:
+
+**Job Summary Display:**
+- **Result type with emoji** (✅ success, ⚠️ warning, ❌ error, etc.)
+- **Detailed information** including action taken and operation status
+- **Attention flagging** for warnings/errors that need review
+- **PR/commit links** when applicable
+- **Contextual next steps** based on result type
+
+**Result Categories:**
+- **Successful operations**: Clear success indication with commit/PR details
+- **Dry run previews**: Shows what would happen in live execution
+- **No-change situations**: Confirms repository is already in desired state
+- **Warnings**: Highlights issues like missing CODEOWNERS files
+- **Errors**: Shows permission or technical problems requiring attention
 
 ### **Bulk Operation Results**
 Every bulk operation generates comprehensive results that are available in multiple formats:
 
 **Job Summary (GitHub UI):**
-- Real-time progress during execution
-- Final summary with statistics and detailed repository table
+- **Result Type Summary** table with percentages
+- **Items Requiring Attention** section highlighting issues
+- **Repository Results** table sorted by attention priority
 - Direct links to individual repository operation logs
 
 **Downloadable Artifacts:**
-- **`bulk-changes-report.md`**: Complete markdown report with tables and statistics
-- **`bulk-changes-results.csv`**: CSV data for spreadsheet analysis
+- **`bulk-changes-report.md`**: Complete markdown report with enhanced categorization
+- **`bulk-changes-results.csv`**: CSV data for spreadsheet analysis with result types
 - **`bulk-changes-data.json`**: JSON format for programmatic processing
 
-**Results Include:**
+**Enhanced Results Include:**
 - Repository name and category classification
-- Operation status (success/failure/cancelled/skipped)
-- Detailed status explanations
+- **Standardized result types** instead of operation-specific status codes
+- Detailed explanations with contextual information
+- Automatic attention flagging for issues requiring review
 - Links to individual job logs for troubleshooting
-- Summary statistics with percentages
+- Summary statistics with percentages by result type
 - Execution metadata (timestamp, operation type, mode)
 
 ### **Artifact Retention**
@@ -220,42 +281,80 @@ Every bulk operation generates comprehensive results that are available in multi
 - Unique naming: `bulk-changes-results-{run-number}`
 
 ### **Results Analysis**
-**Success/Failure Tracking:**
-- Clear visual indicators (✅❌⏹️⏭️) in summary tables
-- Failures listed first for easy identification
-- Percentage breakdowns for quick assessment
+**Enhanced Success/Failure Tracking:**
+- **Result type categorization** with clear visual indicators
+- **Attention-required items** listed first for easy identification
+- **Percentage breakdowns** by result type for quick assessment
+- **Contextual details** explaining what happened and why
 
 **Next Steps Guidance:**
 - **After dry runs**: Review what will change, then run live
-- **After failures**: Specific guidance on manual intervention needed
-- **Re-run capability**: Target specific repositories that failed
+- **After warnings**: Specific guidance on addressing prerequisites
+- **After errors**: Detailed troubleshooting information
+- **Re-run capability**: Target specific repositories that need attention
 
 ## Troubleshooting
 
-**Common Issues:**
-- **Repository not found**: Check repository name spelling and organization access
-- **Permission denied (wiki operations)**: Verify you have admin access and proper token scopes
-- **Wiki has content**: Wiki disable operation skipped for safety - content found
-- **CODEOWNERS rule exists**: CHANGELOG.MD rule already present, no changes needed
-- **Token insufficient**: Ensure CAMARA_TOKEN has `repo` scope and admin permissions
+### **Result Type Troubleshooting**
 
-**Permission-Related Errors:**
+**🧪 `would-action` (Dry Run Results):**
+- **Meaning**: Dry run completed successfully, shows what would happen
+- **Action**: Review the preview, then run in live mode if satisfied
+- **Next Steps**: Proceed to live execution or bulk operations
+
+**📊 `no-change` (Already Configured):**
+- **Meaning**: Repository is already in the desired state
+- **Action**: No action needed, repository can be included in bulk operations
+- **Next Steps**: Proceed with confidence
+
+**⚠️ `warning` (Attention Required):**
+- **Common Cases**: Missing CODEOWNERS file, wiki has content, direct commit blocked
+- **Action**: Review the specific warning and address prerequisites
+- **Next Steps**: Fix the issue and re-run, or exclude from bulk operations
+
+**❌ `error` (Operation Failed):**
+- **Common Cases**: Permission denied, repository not found, API errors
+- **Action**: Check token permissions and repository access
+- **Next Steps**: Fix authentication/access issues and retry
+
+### **Common Issues by Operation**
+
+**Wiki Operations:**
+- **Permission denied**: Verify you have admin access and proper token scopes
+- **Wiki has content**: Wiki disable operation skipped for safety - manual review needed
+- **Repository not found**: Check repository name spelling and organization access
+
+**CODEOWNERS Operations:**
+- **No CODEOWNERS file**: Repository missing CODEOWNERS file (operation skipped with warning)
+- **CHANGELOG rules exist**: Either CHANGELOG.MD or CHANGELOG.md rule already present
+- **Direct commit blocked**: Branch protection prevents direct commits (use pull-request strategy)
+- **Token insufficient**: Ensure CAMARA_TOKEN has `repo` scope and appropriate permissions
+
+### **Permission-Related Errors**
 - **403 Forbidden**: Token lacks required permissions (check Contents: Write for CODEOWNERS operations)
 - **404 Not Found**: Repository doesn't exist or token lacks access
 - **409 Conflict**: File was modified by someone else (CODEOWNERS operations) - retry needed
 - **422 Unprocessable**: Organization policies may prevent certain operations
 
-**Wiki Operation Status Codes:**
-- `no-change`: Wiki already disabled
-- `wiki-has-content`: Wiki has content, skipped for safety  
-- `would-disable-wiki`: Dry run would disable empty wiki
-- `wiki-disabled`: Successfully disabled empty wiki
+### **System Architecture Issues**
+- **Artifact collection problems**: Should be resolved with unique filename system
+- **Result display inconsistencies**: Emoji and formatting handled centrally in bulk workflow
+- **Missing results**: Check individual matrix job logs for specific repository failures
 
-**CODEOWNERS Operation Status Codes:**
-- `no-change`: CHANGELOG.MD rule already exists
-- `direct-commit`: Successfully committed directly to default branch
-- `direct-commit-blocked`: Direct commit blocked by branch protection (warning issued)
-- `pr-created`: Pull request created
-- `would-commit-or-warn`: Dry run would attempt direct commit with warning fallback
-- `would-create-pr`: Dry run would create pull request
-- `no-codeowners-file`: Repository missing CODEOWNERS file (operation skipped with warning)
+## Advanced Features
+
+### **Extensibility**
+The modular result system makes it easy to add new operations:
+
+1. **Add operation logic** to the worker workflow
+2. **Set standardized result fields**: `result_type`, `details`, `action_taken`
+3. **No changes needed** to bulk or single test workflows
+4. **Automatic integration** with reporting and display systems
+
+### **Future-Proof Design**
+- **Centralized emoji mapping** in bulk workflow for easy updates
+- **Standardized result schema** works with any operation type
+- **Modular architecture** separates operation logic from display formatting
+- **Consistent user experience** across all workflow types
+
+This system is designed to scale and evolve with the CAMARA project's administrative needs while maintaining reliability and ease of use.
