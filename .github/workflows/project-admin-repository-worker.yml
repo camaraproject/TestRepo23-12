@@ -478,7 +478,8 @@ jobs:
           COMMIT_SHA="${{ env.commit_sha }}"
           STATUS="${{ env.status }}"
           
-          cat > /tmp/results/result.json << EOF
+          # Create uniquely named file to prevent conflicts during collection
+          cat > /tmp/results/result-${{ inputs.repository_name }}.json << EOF
           {
             "repository": "${{ inputs.repository_name }}",
             "operation": "${{ inputs.operation }}",
@@ -492,15 +493,15 @@ jobs:
           }
           EOF
           
-          echo "Created result file:"
-          cat /tmp/results/result.json
+          echo "Created result file for repository ${{ inputs.repository_name }}:"
+          cat /tmp/results/result-${{ inputs.repository_name }}.json
 
       - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: result-${{ inputs.repository_name }}
-          path: /tmp/results/result.json
+          path: /tmp/results/result-${{ inputs.repository_name }}.json
           retention-days: 1
 
       - name: Create summary
