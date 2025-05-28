@@ -206,25 +206,6 @@ jobs:
     secrets:
       CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 
-  execute-changes:
-    needs: get-repositories
-    if: fromJson(needs.get-repositories.outputs.total_count) > 0
-    strategy:
-      matrix:
-        repository: ${{ fromJson(needs.get-repositories.outputs.repositories) }}
-      max-parallel: 5
-      fail-fast: false
-    uses: ./.github/workflows/project-admin-repository-worker.yml
-    with:
-      repository_name: ${{ matrix.repository.name }}
-      repository_full_name: ${{ matrix.repository.full_name }}
-      default_branch: ${{ matrix.repository.default_branch }}
-      operation: ${{ github.event.inputs.operation }}
-      dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
-      commit_strategy: ${{ github.event.inputs.commit_strategy }}
-    secrets:
-      CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
-
   collect-results:
     needs: [get-repositories, execute-changes]
     if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
@@ -253,7 +234,7 @@ jobs:
             // Find execute-changes jobs (matrix jobs)
             const matrixJobs = jobs.data.jobs.filter(job => 
               job.name.includes('execute-changes') && 
-              job.name.includes('(')  // Matrix jobs have (repository.name) in the name
+              job.name.includes('(')
             );
             
             console.log(`Found ${matrixJobs.length} matrix jobs`);
@@ -321,31 +302,32 @@ jobs:
             const totalRepos = repositories.length;
             
             // Create markdown report
-            let markdownReport = `# CAMARA Bulk Repository Changes - Execution Report
-            
-            **Execution Time:** ${timestamp}
-            **Operation:** ${operation}
-            **Commit Strategy:** ${commitStrategy}
-            **Mode:** ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}
-            **Total Repositories:** ${totalRepos}
-            
-            ## Summary Statistics
-            
-            | Status | Count | Percentage |
-            |--------|-------|------------|`;
+            const reportLines = [
+              '# CAMARA Bulk Repository Changes - Execution Report',
+              '',
+              `**Execution Time:** ${timestamp}`,
+              `**Operation:** ${operation}`,
+              `**Commit Strategy:** ${commitStrategy}`,
+              `**Mode:** ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}`,
+              `**Total Repositories:** ${totalRepos}`,
+              '',
+              '## Summary Statistics',
+              '',
+              '| Status | Count | Percentage |',
+              '|--------|-------|------------|'
+            ];
             
             for (const [status, count] of Object.entries(statusCounts)) {
               const percentage = totalRepos > 0 ? ((count / totalRepos) * 100).toFixed(1) : '0.0';
               const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : status === 'cancelled' ? '⏹️' : '⏭️';
-              markdownReport += `\n| ${emoji} ${status} | ${count} | ${percentage}% |`;
+              reportLines.push(`| ${emoji} ${status} | ${count} | ${percentage}% |`);
             }
             
-            markdownReport += `
-            
-            ## Repository Results
-            
-            | Repository | Category | Status | Details |
-            |------------|----------|--------|---------|`;
+            reportLines.push('');
+            reportLines.push('## Repository Results');
+            reportLines.push('');
+            reportLines.push('| Repository | Category | Status | Details |');
+            reportLines.push('|------------|----------|--------|---------|');
             
             // Sort results by status (failures first, then success)
             results.sort((a, b) => {
@@ -358,34 +340,37 @@ jobs:
               const emoji = result.status === 'success' ? '✅' : 
                            result.status === 'failure' ? '❌' : 
                            result.status === 'cancelled' ? '⏹️' : '⏭️';
-              markdownReport += `\n| ${result.repository} | ${result.category} | ${emoji} ${result.status} | ${result.details} |`;
+              reportLines.push(`| ${result.repository} | ${result.category} | ${emoji} ${result.status} | ${result.details} |`);
             }
             
-            markdownReport += `
+            reportLines.push('');
+            reportLines.push('## Next Steps');
+            reportLines.push('');
             
-            ## Next Steps
+            if (dryRun) {
+              reportLines.push('### After Dry Run Review:');
+              reportLines.push('- Review the results above to understand which repositories will be affected');
+              reportLines.push('- Check any failed operations and resolve issues');
+              reportLines.push('- Run the same operation with dry_run disabled for live execution');
+            } else {
+              reportLines.push('### After Live Execution:');
+              reportLines.push('- ✅ **Successful operations**: Changes have been applied');
+              reportLines.push('- ❌ **Failed operations**: Review job logs and resolve issues manually');
+              reportLines.push('- 🔄 **Re-run capability**: Failed repositories can be targeted specifically for retry');
+            }
             
-            ${dryRun ? `
-            ### After Dry Run Review:
-            - Review the results above to understand which repositories will be affected
-            - Check any failed operations and resolve issues
-            - Run the same operation with dry_run disabled for live execution
-            ` : `
-            ### After Live Execution:
-            - ✅ **Successful operations**: Changes have been applied
-            - ❌ **Failed operations**: Review job logs and resolve issues manually
-            - 🔄 **Re-run capability**: Failed repositories can be targeted specifically for retry
-            `}
+            reportLines.push('');
+            reportLines.push('---');
+            reportLines.push('*Generated by CAMARA project-admin bulk workflow*');
             
-            ---
-            *Generated by CAMARA project-admin bulk workflow*
-            `;
+            const markdownReport = reportLines.join('\n');
             
-            // Also create CSV data
-            let csvData = 'Repository,Category,Status,Details,Job URL\n';
+            // Create CSV data
+            let csvLines = ['Repository,Category,Status,Details,Job URL'];
             for (const result of results) {
-              csvData += `"${result.repository}","${result.category}","${result.status}","${result.details}","${result.job_url}"\n`;
+              csvLines.push(`"${result.repository}","${result.category}","${result.status}","${result.details}","${result.job_url}"`);
             }
+            const csvData = csvLines.join('\n');
             
             // Write files using Node.js fs
             const fs = require('fs');
