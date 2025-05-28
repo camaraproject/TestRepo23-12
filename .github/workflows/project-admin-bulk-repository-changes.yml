@@ -205,8 +205,22 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             
+            // Emoji mapping for result types (centralized here)
+            const emojiMap = {
+              'success': '✅',
+              'no-change': '📊', 
+              'warning': '⚠️',
+              'would-action': '🧪',
+              'error': '❌'
+            };
+            
+            // Function to determine if result requires attention
+            function requiresAttention(resultType) {
+              return ['warning', 'error'].includes(resultType);
+            }
+            
             let results = [];
-            let statusCounts = {};
+            let resultTypeCounts = {};
             
             // Read result files from artifacts
             try {
@@ -221,55 +235,32 @@ jobs:
                       const filePath = path.join(artifactsDir, file);
                       const resultData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
                       
-                      const operationStatus = resultData.status || 'unknown';
-                      let details = '';
+                      // Use the generalized result fields from worker
+                      const resultType = resultData.result_type || 'unknown';
+                      const details = resultData.details || 'No details available';
+                      const emoji = emojiMap[resultType] || '❓';
+                      const requiresAttentionFlag = requiresAttention(resultType);
                       
-                      // Create detailed status description
-                      switch (operationStatus) {
-                        case 'no-change':
-                          details = operation === 'disable-wiki' ? 'Wiki already disabled' : 'CHANGELOG.MD rule already exists';
-                          break;
-                        case 'direct-commit':
-                          details = `Direct commit successful${resultData.commit_sha ? ` (${resultData.commit_sha.substring(0, 7)})` : ''}`;
-                          break;
-                        case 'direct-commit-blocked':
-                          details = 'Direct commit blocked by branch protection';
-                          break;
-                        case 'pr-created':
-                          details = `Pull request created${resultData.pr_number ? ` (#${resultData.pr_number})` : ''}`;
-                          break;
-                        case 'wiki-disabled':
-                          details = 'Wiki disabled successfully';
-                          break;
-                        case 'wiki-has-content':
-                          details = 'Wiki has content - skipped for safety';
-                          break;
-                        case 'would-disable-wiki':
-                          details = 'Dry run: Would disable wiki';
-                          break;
-                        case 'would-create-pr':
-                          details = 'Dry run: Would create pull request';
-                          break;
-                        case 'would-commit-or-warn':
-                          details = 'Dry run: Would attempt direct commit';
-                          break;
-                        case 'no-codeowners-file':
-                          details = 'No CODEOWNERS file found';
-                          break;
-                        default:
-                          details = operationStatus;
-                      }
-                      
-                      statusCounts[operationStatus] = (statusCounts[operationStatus] || 0) + 1;
+                      resultTypeCounts[resultType] = (resultTypeCounts[resultType] || 0) + 1;
                       
                       const repoInfo = repositories.find(r => r.name === resultData.repository);
                       const category = repoInfo ? repoInfo.category : 'unknown';
                       
+                      // Add PR/commit links to details if available
+                      let detailsWithLinks = details;
+                      if (resultData.pr_number && resultData.pr_url) {
+                        detailsWithLinks += ` [PR #${resultData.pr_number}](${resultData.pr_url})`;
+                      }
+                      
                       results.push({
                         repository: resultData.repository,
                         category: category,
-                        operation_status: operationStatus,
-                        details: details,
+                        result_type: resultType,
+                        details: detailsWithLinks,
+                        emoji: emoji,
+                        requires_attention: requiresAttentionFlag,
+                        operation_status: resultData.operation_status || resultType,
+                        action_taken: resultData.action_taken || 'unknown',
                         pr_url: resultData.pr_url || '',
                         pr_number: resultData.pr_number || '',
                         commit_sha: resultData.commit_sha || ''
@@ -277,6 +268,22 @@ jobs:
                       
                     } catch (parseError) {
                       console.log(`Error parsing ${file}: ${parseError.message}`);
+                      // Add error entry for failed parsing
+                      const repoName = file.replace(/^result-/, '').replace(/\.json$/, '');
+                      results.push({
+                        repository: repoName,
+                        category: 'unknown',
+                        result_type: 'error',
+                        details: `Failed to parse result file: ${parseError.message}`,
+                        emoji: '❌',
+                        requires_attention: true,
+                        operation_status: 'parse-error',
+                        action_taken: 'failed',
+                        pr_url: '',
+                        pr_number: '',
+                        commit_sha: ''
+                      });
+                      resultTypeCounts['error'] = (resultTypeCounts['error'] || 0) + 1;
                     }
                   }
                 }
@@ -300,61 +307,57 @@ jobs:
               `**Mode:** ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}`,
               `**Total Repositories:** ${totalRepos}`,
               '',
-              '## Operation Status Summary',
+              '## Result Type Summary',
               '',
-              '| Operation Status | Count | Percentage |',
-              '|------------------|-------|------------|'
+              '| Result Type | Count | Percentage |',
+              '|-------------|-------|------------|'
             ];
             
-            for (const [status, count] of Object.entries(statusCounts)) {
+            for (const [resultType, count] of Object.entries(resultTypeCounts)) {
               const percentage = totalRepos > 0 ? ((count / totalRepos) * 100).toFixed(1) : '0.0';
-              const emoji = status.includes('success') || status === 'direct-commit' || status === 'pr-created' || status === 'wiki-disabled' ? '✅' : 
-                           status.includes('fail') || status.includes('error') ? '❌' : 
-                           status.includes('blocked') || status.includes('content') || status.includes('no-') ? '⚠️' :
-                           status.includes('would-') ? '🧪' : '📊';
-              reportLines.push(`| ${emoji} ${status} | ${count} | ${percentage}% |`);
+              const emoji = emojiMap[resultType] || '❓';
+              reportLines.push(`| ${emoji} ${resultType} | ${count} | ${percentage}% |`);
             }
             
             reportLines.push('');
             reportLines.push('## Repository Results');
             reportLines.push('');
-            reportLines.push('| Repository | Category | Operation Status | Details |');
-            reportLines.push('|------------|----------|------------------|---------|');
+            reportLines.push('| Repository | Category | Result | Details |');
+            reportLines.push('|------------|----------|--------|---------|');
             
-            // Sort results: issues first, then success
+            // Sort results: attention-required first, then by repository name
             results.sort((a, b) => {
-              const aIsIssue = a.operation_status.includes('fail') || a.operation_status.includes('blocked') || a.operation_status.includes('no-') || a.operation_status.includes('error');
-              const bIsIssue = b.operation_status.includes('fail') || b.operation_status.includes('blocked') || b.operation_status.includes('no-') || b.operation_status.includes('error');
-              
-              if (aIsIssue && !bIsIssue) return -1;
-              if (!aIsIssue && bIsIssue) return 1;
+              if (a.requires_attention && !b.requires_attention) return -1;
+              if (!a.requires_attention && b.requires_attention) return 1;
               return a.repository.localeCompare(b.repository);
             });
             
             for (const result of results) {
-              const emoji = result.operation_status.includes('success') || result.operation_status === 'direct-commit' || result.operation_status === 'pr-created' || result.operation_status === 'wiki-disabled' ? '✅' : 
-                           result.operation_status.includes('fail') || result.operation_status.includes('error') ? '❌' : 
-                           result.operation_status.includes('blocked') || result.operation_status.includes('content') || result.operation_status.includes('no-') ? '⚠️' :
-                           result.operation_status.includes('would-') ? '🧪' : '📊';
-              
-              let detailsWithLinks = result.details;
-              if (result.pr_number && result.pr_url) {
-                detailsWithLinks += ` [PR #${result.pr_number}](${result.pr_url})`;
-              }
-              
-              reportLines.push(`| ${result.repository} | ${result.category} | ${emoji} ${result.operation_status} | ${detailsWithLinks} |`);
+              reportLines.push(`| ${result.repository} | ${result.category} | ${result.emoji} ${result.result_type} | ${result.details} |`);
             }
             
             reportLines.push('');
+            
+            // Add attention section if there are items requiring attention
+            const attentionItems = results.filter(r => r.requires_attention);
+            if (attentionItems.length > 0) {
+              reportLines.push('## Items Requiring Attention');
+              reportLines.push('');
+              for (const item of attentionItems) {
+                reportLines.push(`- **${item.repository}**: ${item.details}`);
+              }
+              reportLines.push('');
+            }
+            
             reportLines.push('---');
             reportLines.push('*Generated by CAMARA project-admin bulk workflow*');
             
             const markdownReport = reportLines.join('\n');
             
             // Create CSV and JSON data
-            let csvLines = ['Repository,Category,Operation Status,Details,PR Number,PR URL,Commit SHA'];
+            let csvLines = ['Repository,Category,Result Type,Details,Operation Status,Action Taken,PR Number,PR URL,Commit SHA,Requires Attention'];
             for (const result of results) {
-              csvLines.push(`"${result.repository}","${result.category}","${result.operation_status}","${result.details}","${result.pr_number}","${result.pr_url}","${result.commit_sha}"`);
+              csvLines.push(`"${result.repository}","${result.category}","${result.result_type}","${result.details}","${result.operation_status}","${result.action_taken}","${result.pr_number}","${result.pr_url}","${result.commit_sha}","${result.requires_attention}"`);
             }
             const csvData = csvLines.join('\n');
             
@@ -366,7 +369,10 @@ jobs:
                 dry_run: dryRun,
                 total_repositories: totalRepos
               },
-              summary: statusCounts,
+              summary: {
+                result_types: resultTypeCounts,
+                items_requiring_attention: attentionItems.length
+              },
               results: results
             };
             
@@ -386,6 +392,15 @@ jobs:
             await core.summary.write();
             
             console.log(`📊 Results summary completed - processed ${totalRepos} repositories`);
+            
+            // Log summary stats
+            console.log('\n=== Summary Statistics ===');
+            for (const [resultType, count] of Object.entries(resultTypeCounts)) {
+              console.log(`${resultType}: ${count}`);
+            }
+            if (attentionItems.length > 0) {
+              console.log(`\n⚠️ ${attentionItems.length} items require attention`);
+            }
 
       - name: Upload results artifacts
         uses: actions/upload-artifact@v4
