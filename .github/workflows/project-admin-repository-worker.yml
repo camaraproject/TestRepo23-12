@@ -311,13 +311,16 @@ jobs:
               
               if (${{ inputs.dry_run }}) {
                 console.log(`🧪 DRY RUN: Would apply changes using strategy: ${commitStrategy}`);
-                core.exportVariable('status', commitStrategy === 'pull-request' ? 'would-create-pr' : 'would-commit-or-pr');
+                const dryRunStatus = commitStrategy === 'pull-request' ? 'would-create-pr' : 
+                                   commitStrategy === 'direct-with-pr-fallback' ? 'would-commit-or-pr' :
+                                   'would-commit-or-warn';
+                core.exportVariable('status', dryRunStatus);
                 return;
               }
               
               // Execute based on commit strategy
-              if (commitStrategy === 'direct-with-pr-fallback') {
-                // Try direct commit first, fallback to PR
+              if (commitStrategy === 'direct-with-pr-fallback' || commitStrategy === 'direct-with-warning') {
+                // Try direct commit first
                 try {
                   console.log('Attempting direct commit...');
                   const directCommitResponse = await github.rest.repos.createOrUpdateFileContents({
@@ -337,12 +340,26 @@ jobs:
                   
                 } catch (directError) {
                   if (directError.status === 403) {
-                    console.log('⚠️ Direct commit blocked (likely branch protection) - falling back to pull request');
-                    // Continue to PR creation below
+                    if (commitStrategy === 'direct-with-warning') {
+                      // Just warn and exit - no PR creation
+                      console.log('⚠️ Direct commit blocked (likely branch protection) - operation skipped');
+                      core.warning(`Repository ${owner}/${repo} has branch protection - direct commit not possible. Consider using pull-request strategy.`);
+                      core.exportVariable('status', 'direct-commit-blocked');
+                      return;
+                    } else {
+                      // direct-with-pr-fallback - continue to PR creation
+                      console.log('⚠️ Direct commit blocked (likely branch protection) - falling back to pull request');
+                    }
                   } else {
                     throw directError;
                   }
                 }
+              }
+              
+              // Create pull request (either as primary strategy or fallback)
+              // Skip if we already handled direct-with-warning case above
+              if (commitStrategy === 'direct-with-warning') {
+                return; // Should never reach here due to return above, but safety check
               }
               
               // Create pull request (either as primary strategy or fallback)
@@ -467,6 +484,10 @@ jobs:
                 "direct-commit")
                   echo "**Result**: Direct commit successful" >> $GITHUB_STEP_SUMMARY
                   echo "**Commit**: ${{ env.commit_sha }}" >> $GITHUB_STEP_SUMMARY
+                  ;;
+                "direct-commit-blocked")
+                  echo "**Result**: ⚠️ Direct commit blocked by branch protection" >> $GITHUB_STEP_SUMMARY
+                  echo "**Note**: Repository requires pull request workflow" >> $GITHUB_STEP_SUMMARY
                   ;;
                 "pr-created")
                   echo "**Result**: Pull request created" >> $GITHUB_STEP_SUMMARY
