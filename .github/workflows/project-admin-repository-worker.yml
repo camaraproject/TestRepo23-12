@@ -466,6 +466,43 @@ jobs:
           
           git push origin ${{ inputs.default_branch }}
 
+      - name: Create result file for collection
+        if: always()
+        run: |
+          # Create a result file with structured data for bulk operations
+          mkdir -p /tmp/results
+          
+          # Handle potentially empty environment variables
+          PR_NUMBER="${{ env.pr_number }}"
+          PR_URL="${{ env.pr_url }}"
+          COMMIT_SHA="${{ env.commit_sha }}"
+          STATUS="${{ env.status }}"
+          
+          cat > /tmp/results/result.json << EOF
+          {
+            "repository": "${{ inputs.repository_name }}",
+            "operation": "${{ inputs.operation }}",
+            "status": "${STATUS:-unknown}",
+            "dry_run": ${{ inputs.dry_run }},
+            "commit_strategy": "${{ inputs.commit_strategy }}",
+            "pr_number": "${PR_NUMBER:-}",
+            "pr_url": "${PR_URL:-}",
+            "commit_sha": "${COMMIT_SHA:-}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          
+          echo "Created result file:"
+          cat /tmp/results/result.json
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ inputs.repository_name }}
+          path: /tmp/results/result.json
+          retention-days: 1
+
       - name: Create summary
         run: |
           echo "## Repository: ${{ inputs.repository_name }}" >> $GITHUB_STEP_SUMMARY

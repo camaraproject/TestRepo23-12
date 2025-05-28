@@ -211,6 +211,18 @@ jobs:
     if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
     runs-on: ubuntu-latest
     steps:
+  collect-results:
+    needs: [get-repositories, execute-changes]
+    if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: artifacts/
+          merge-multiple: true
+
       - name: Collect and summarize results
         uses: actions/github-script@v7
         with:
@@ -220,82 +232,156 @@ jobs:
             const dryRun = ${{ fromJson(github.event.inputs.dry_run) }};
             const commitStrategy = '${{ github.event.inputs.commit_strategy }}' || 'N/A';
             
-            console.log('Collecting results from matrix jobs...');
+            console.log('Collecting results from artifacts...');
             
-            // Get all jobs from this workflow run
-            const jobs = await github.rest.actions.listJobsForWorkflowRun({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId
-            });
+            const fs = require('fs');
+            const path = require('path');
             
-            console.log(`Found ${jobs.data.jobs.length} jobs`);
-            
-            // Find execute-changes jobs (matrix jobs)
-            const matrixJobs = jobs.data.jobs.filter(job => 
-              job.name.includes('execute-changes') && 
-              job.name.includes('(')
-            );
-            
-            console.log(`Found ${matrixJobs.length} matrix jobs`);
-            
-            // Create results summary
+            // Read all result files
             let results = [];
-            let statusCounts = {
-              'success': 0,
-              'failure': 0,
-              'cancelled': 0,
-              'skipped': 0
-            };
+            let statusCounts = {};
             
-            for (const repo of repositories) {
-              // Find the corresponding matrix job
-              const matrixJob = matrixJobs.find(job => 
-                job.name.includes(`(${repo.name})`) || job.name.includes(repo.name)
+            try {
+              const artifactsDir = 'artifacts';
+              if (fs.existsSync(artifactsDir)) {
+                const files = fs.readdirSync(artifactsDir);
+                console.log(`Found ${files.length} result files`);
+                
+                for (const file of files) {
+                  if (file.endsWith('.json')) {
+                    try {
+                      const filePath = path.join(artifactsDir, file);
+                      const resultData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                      
+                      // Get operation status and details
+                      const operationStatus = resultData.status || 'unknown';
+                      let details = '';
+                      
+                      // Create detailed status description
+                      switch (operationStatus) {
+                        case 'no-change':
+                          details = operation === 'disable-wiki' ? 'Wiki already disabled' : 'CHANGELOG.MD rule already exists';
+                          break;
+                        case 'direct-commit':
+                          details = `Direct commit successful${resultData.commit_sha ? ` (${resultData.commit_sha.substring(0, 7)})` : ''}`;
+                          break;
+                        case 'direct-commit-blocked':
+                          details = 'Direct commit blocked by branch protection';
+                          break;
+                        case 'pr-created':
+                          details = `Pull request created${resultData.pr_number ? ` (#${resultData.pr_number})` : ''}`;
+                          break;
+                        case 'wiki-disabled':
+                          details = 'Wiki disabled successfully';
+                          break;
+                        case 'wiki-has-content':
+                          details = 'Wiki has content - skipped for safety';
+                          break;
+                        case 'would-disable-wiki':
+                          details = 'Dry run: Would disable wiki';
+                          break;
+                        case 'would-create-pr':
+                          details = 'Dry run: Would create pull request';
+                          break;
+                        case 'would-commit-or-warn':
+                          details = 'Dry run: Would attempt direct commit';
+                          break;
+                        case 'no-codeowners-file':
+                          details = 'No CODEOWNERS file found';
+                          break;
+                        default:
+                          details = operationStatus;
+                      }
+                      
+                      // Count statuses
+                      if (statusCounts[operationStatus]) {
+                        statusCounts[operationStatus]++;
+                      } else {
+                        statusCounts[operationStatus] = 1;
+                      }
+                      
+                      // Find repository category
+                      const repoInfo = repositories.find(r => r.name === resultData.repository);
+                      const category = repoInfo ? repoInfo.category : 'unknown';
+                      
+                      results.push({
+                        repository: resultData.repository,
+                        category: category,
+                        operation_status: operationStatus,
+                        details: details,
+                        pr_url: resultData.pr_url || '',
+                        pr_number: resultData.pr_number || '',
+                        commit_sha: resultData.commit_sha || ''
+                      });
+                      
+                    } catch (parseError) {
+                      console.log(`Error parsing ${file}: ${parseError.message}`);
+                    }
+                  }
+                }
+              } else {
+                console.log('No artifacts directory found');
+              }
+            } catch (error) {
+              console.log(`Error reading artifacts: ${error.message}`);
+            }
+            
+            // If no results from artifacts, fall back to job analysis
+            if (results.length === 0) {
+              console.log('No artifact results found, falling back to job analysis...');
+              
+              // Get all jobs from this workflow run
+              const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId
+              });
+              
+              // Find execute-changes jobs (matrix jobs)
+              const matrixJobs = jobs.data.jobs.filter(job => 
+                job.name.includes('execute-changes') && 
+                job.name.includes('(')
               );
               
-              let status = 'unknown';
-              let conclusion = 'unknown';
-              let details = '';
-              
-              if (matrixJob) {
-                status = matrixJob.status;
-                conclusion = matrixJob.conclusion || 'in_progress';
+              for (const repo of repositories) {
+                const matrixJob = matrixJobs.find(job => 
+                  job.name.includes(`(${repo.name})`) || job.name.includes(repo.name)
+                );
                 
-                // Count conclusions
-                if (statusCounts[conclusion] !== undefined) {
-                  statusCounts[conclusion]++;
+                let operationStatus = 'unknown';
+                let details = '';
+                
+                if (matrixJob) {
+                  const jobConclusion = matrixJob.conclusion || 'in_progress';
+                  
+                  if (jobConclusion === 'success') {
+                    operationStatus = dryRun ? 'dry-run-success' : 'success';
+                    details = dryRun ? 'Dry run completed successfully' : 'Operation completed successfully';
+                  } else {
+                    operationStatus = jobConclusion;
+                    details = 'Check job logs for details';
+                  }
+                }
+                
+                if (statusCounts[operationStatus]) {
+                  statusCounts[operationStatus]++;
                 } else {
-                  statusCounts[conclusion] = 1;
+                  statusCounts[operationStatus] = 1;
                 }
                 
-                // Determine details based on conclusion
-                switch (conclusion) {
-                  case 'success':
-                    details = dryRun ? 'Dry run completed' : 'Operation completed successfully';
-                    break;
-                  case 'failure':
-                    details = 'Operation failed - check job logs';
-                    break;
-                  case 'cancelled':
-                    details = 'Operation was cancelled';
-                    break;
-                  case 'skipped':
-                    details = 'Operation was skipped';
-                    break;
-                  default:
-                    details = `Status: ${conclusion}`;
-                }
+                results.push({
+                  repository: repo.name,
+                  category: repo.category || 'other',
+                  operation_status: operationStatus,
+                  details: details,
+                  pr_url: '',
+                  pr_number: '',
+                  commit_sha: ''
+                });
               }
-              
-              results.push({
-                repository: repo.name,
-                category: repo.category || 'other',
-                status: conclusion,
-                details: details,
-                job_url: matrixJob ? matrixJob.html_url : 'N/A'
-              });
             }
+            
+            console.log(`Collected ${results.length} results`);
             
             // Generate execution summary
             const timestamp = new Date().toISOString();
@@ -311,36 +397,49 @@ jobs:
               `**Mode:** ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}`,
               `**Total Repositories:** ${totalRepos}`,
               '',
-              '## Summary Statistics',
+              '## Operation Status Summary',
               '',
-              '| Status | Count | Percentage |',
-              '|--------|-------|------------|'
+              '| Operation Status | Count | Percentage |',
+              '|------------------|-------|------------|'
             ];
             
             for (const [status, count] of Object.entries(statusCounts)) {
               const percentage = totalRepos > 0 ? ((count / totalRepos) * 100).toFixed(1) : '0.0';
-              const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : status === 'cancelled' ? '⏹️' : '⏭️';
+              const emoji = status.includes('success') || status === 'direct-commit' || status === 'pr-created' || status === 'wiki-disabled' ? '✅' : 
+                           status.includes('fail') || status.includes('error') ? '❌' : 
+                           status.includes('blocked') || status.includes('content') || status.includes('no-') ? '⚠️' :
+                           status.includes('would-') ? '🧪' : '📊';
               reportLines.push(`| ${emoji} ${status} | ${count} | ${percentage}% |`);
             }
             
             reportLines.push('');
             reportLines.push('## Repository Results');
             reportLines.push('');
-            reportLines.push('| Repository | Category | Status | Details |');
-            reportLines.push('|------------|----------|--------|---------|');
+            reportLines.push('| Repository | Category | Operation Status | Details |');
+            reportLines.push('|------------|----------|------------------|---------|');
             
-            // Sort results by status (failures first, then success)
+            // Sort results: failures/warnings first, then success, then by repository name  
             results.sort((a, b) => {
-              if (a.status === 'failure' && b.status !== 'failure') return -1;
-              if (a.status !== 'failure' && b.status === 'failure') return 1;
+              const aIsIssue = a.operation_status.includes('fail') || a.operation_status.includes('blocked') || a.operation_status.includes('no-') || a.operation_status.includes('error');
+              const bIsIssue = b.operation_status.includes('fail') || b.operation_status.includes('blocked') || b.operation_status.includes('no-') || b.operation_status.includes('error');
+              
+              if (aIsIssue && !bIsIssue) return -1;
+              if (!aIsIssue && bIsIssue) return 1;
               return a.repository.localeCompare(b.repository);
             });
             
             for (const result of results) {
-              const emoji = result.status === 'success' ? '✅' : 
-                           result.status === 'failure' ? '❌' : 
-                           result.status === 'cancelled' ? '⏹️' : '⏭️';
-              reportLines.push(`| ${result.repository} | ${result.category} | ${emoji} ${result.status} | ${result.details} |`);
+              const emoji = result.operation_status.includes('success') || result.operation_status === 'direct-commit' || result.operation_status === 'pr-created' || result.operation_status === 'wiki-disabled' ? '✅' : 
+                           result.operation_status.includes('fail') || result.operation_status.includes('error') ? '❌' : 
+                           result.operation_status.includes('blocked') || result.operation_status.includes('content') || result.operation_status.includes('no-') ? '⚠️' :
+                           result.operation_status.includes('would-') ? '🧪' : '📊';
+              
+              let detailsWithLinks = result.details;
+              if (result.pr_number && result.pr_url) {
+                detailsWithLinks += ` [PR #${result.pr_number}](${result.pr_url})`;
+              }
+              
+              reportLines.push(`| ${result.repository} | ${result.category} | ${emoji} ${result.operation_status} | ${detailsWithLinks} |`);
             }
             
             reportLines.push('');
@@ -349,14 +448,15 @@ jobs:
             
             if (dryRun) {
               reportLines.push('### After Dry Run Review:');
-              reportLines.push('- Review the results above to understand which repositories will be affected');
-              reportLines.push('- Check any failed operations and resolve issues');
+              reportLines.push('- Review the operation statuses above to understand what will happen');
+              reportLines.push('- Address any issues (missing CODEOWNERS files, blocked operations)');
               reportLines.push('- Run the same operation with dry_run disabled for live execution');
             } else {
               reportLines.push('### After Live Execution:');
               reportLines.push('- ✅ **Successful operations**: Changes have been applied');
+              reportLines.push('- ⚠️ **Blocked/Warning operations**: May need manual intervention or different strategy');
               reportLines.push('- ❌ **Failed operations**: Review job logs and resolve issues manually');
-              reportLines.push('- 🔄 **Re-run capability**: Failed repositories can be targeted specifically for retry');
+              reportLines.push('- 🔄 **Re-run capability**: Target specific repositories or change strategy as needed');
             }
             
             reportLines.push('');
@@ -366,9 +466,9 @@ jobs:
             const markdownReport = reportLines.join('\n');
             
             // Create CSV data
-            let csvLines = ['Repository,Category,Status,Details,Job URL'];
+            let csvLines = ['Repository,Category,Operation Status,Details,PR Number,PR URL,Commit SHA'];
             for (const result of results) {
-              csvLines.push(`"${result.repository}","${result.category}","${result.status}","${result.details}","${result.job_url}"`);
+              csvLines.push(`"${result.repository}","${result.category}","${result.operation_status}","${result.details}","${result.pr_number}","${result.pr_url}","${result.commit_sha}"`);
             }
             const csvData = csvLines.join('\n');
             
