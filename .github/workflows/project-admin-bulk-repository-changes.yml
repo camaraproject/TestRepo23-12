@@ -371,7 +371,6 @@ jobs:
             };
             
             // Write files
-            const fs = require('fs');
             if (!fs.existsSync('results')) {
               fs.mkdirSync('results');
             }
