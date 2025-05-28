@@ -81,7 +81,7 @@ jobs:
         with:
           github-token: ${{ secrets.CAMARA_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
-            const org = 'camaraproject';  // Hardcoded for CAMARA project
+            const org = 'camaraproject';
             const filterPattern = '${{ github.event.inputs.repository_filter }}';
             const excludeRepos = '${{ github.event.inputs.exclude_repos }}'.split(',').map(r => r.trim()).filter(r => r);
             
@@ -92,13 +92,7 @@ jobs:
             const includeOther = ${{ fromJson(github.event.inputs.include_other_repos) }};
             
             console.log(`Getting repositories for organization: ${org}`);
-            console.log(`Filter pattern: ${filterPattern}`);
-            console.log(`Exclude repos: ${excludeRepos}`);
-            console.log(`Include categories:`);
-            console.log(`  - Sandbox API Repositories: ${includeSandbox}`);
-            console.log(`  - Incubating API Repositories: ${includeIncubating}`);
-            console.log(`  - Working Group Repositories: ${includeWorkingGroup}`);
-            console.log(`  - Other Repositories: ${includeOther}`);
+            console.log(`Include categories: Sandbox=${includeSandbox}, Incubating=${includeIncubating}, WorkingGroup=${includeWorkingGroup}, Other=${includeOther}`);
             
             let allRepos = [];
             let page = 1;
@@ -135,34 +129,19 @@ jobs:
             let categoryCounts = { sandbox: 0, incubating: 0, 'working-group': 0, other: 0 };
             
             for (const repo of allRepos) {
-              // Skip archived repositories
               if (repo.archived) continue;
-              
-              // Skip excluded repositories  
               if (excludeRepos.includes(repo.name)) continue;
-              
-              // Apply name filter pattern if provided
               if (filterPattern && !repo.name.includes(filterPattern)) continue;
               
-              // Categorize repository based on topics
               const category = categorizeRepository(repo.topics || []);
               categoryCounts[category]++;
               
-              // Check if this category is selected for inclusion
               let includeThisRepo = false;
               switch (category) {
-                case 'sandbox':
-                  includeThisRepo = includeSandbox;
-                  break;
-                case 'incubating':
-                  includeThisRepo = includeIncubating;
-                  break;
-                case 'working-group':
-                  includeThisRepo = includeWorkingGroup;
-                  break;
-                case 'other':
-                  includeThisRepo = includeOther;
-                  break;
+                case 'sandbox': includeThisRepo = includeSandbox; break;
+                case 'incubating': includeThisRepo = includeIncubating; break;
+                case 'working-group': includeThisRepo = includeWorkingGroup; break;
+                case 'other': includeThisRepo = includeOther; break;
               }
               
               if (includeThisRepo) {
@@ -177,13 +156,7 @@ jobs:
               category: categorizeRepository(repo.topics || [])
             }));
             
-            console.log(`\nRepository counts by category:`);
-            console.log(`  - Sandbox API Repositories: ${categoryCounts.sandbox}`);
-            console.log(`  - Incubating API Repositories: ${categoryCounts.incubating}`);
-            console.log(`  - Working Group Repositories: ${categoryCounts['working-group']}`);
-            console.log(`  - Other Repositories: ${categoryCounts.other}`);
-            console.log(`\nSelected ${repositories.length} repositories for processing`);
-            
+            console.log(`Selected ${repositories.length} repositories for processing`);
             core.setOutput('repositories', JSON.stringify(repositories));
             core.setOutput('total_count', repositories.length);
 
@@ -211,11 +184,6 @@ jobs:
     if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
     runs-on: ubuntu-latest
     steps:
-  collect-results:
-    needs: [get-repositories, execute-changes]
-    if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
-    runs-on: ubuntu-latest
-    steps:
       - name: Download all result artifacts
         uses: actions/download-artifact@v4
         with:
@@ -237,10 +205,10 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             
-            // Read all result files
             let results = [];
             let statusCounts = {};
             
+            // Read result files from artifacts
             try {
               const artifactsDir = 'artifacts';
               if (fs.existsSync(artifactsDir)) {
@@ -253,7 +221,6 @@ jobs:
                       const filePath = path.join(artifactsDir, file);
                       const resultData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
                       
-                      // Get operation status and details
                       const operationStatus = resultData.status || 'unknown';
                       let details = '';
                       
@@ -293,14 +260,8 @@ jobs:
                           details = operationStatus;
                       }
                       
-                      // Count statuses
-                      if (statusCounts[operationStatus]) {
-                        statusCounts[operationStatus]++;
-                      } else {
-                        statusCounts[operationStatus] = 1;
-                      }
+                      statusCounts[operationStatus] = (statusCounts[operationStatus] || 0) + 1;
                       
-                      // Find repository category
                       const repoInfo = repositories.find(r => r.name === resultData.repository);
                       const category = repoInfo ? repoInfo.category : 'unknown';
                       
@@ -319,75 +280,17 @@ jobs:
                     }
                   }
                 }
-              } else {
-                console.log('No artifacts directory found');
               }
             } catch (error) {
               console.log(`Error reading artifacts: ${error.message}`);
             }
             
-            // If no results from artifacts, fall back to job analysis
-            if (results.length === 0) {
-              console.log('No artifact results found, falling back to job analysis...');
-              
-              // Get all jobs from this workflow run
-              const jobs = await github.rest.actions.listJobsForWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: context.runId
-              });
-              
-              // Find execute-changes jobs (matrix jobs)
-              const matrixJobs = jobs.data.jobs.filter(job => 
-                job.name.includes('execute-changes') && 
-                job.name.includes('(')
-              );
-              
-              for (const repo of repositories) {
-                const matrixJob = matrixJobs.find(job => 
-                  job.name.includes(`(${repo.name})`) || job.name.includes(repo.name)
-                );
-                
-                let operationStatus = 'unknown';
-                let details = '';
-                
-                if (matrixJob) {
-                  const jobConclusion = matrixJob.conclusion || 'in_progress';
-                  
-                  if (jobConclusion === 'success') {
-                    operationStatus = dryRun ? 'dry-run-success' : 'success';
-                    details = dryRun ? 'Dry run completed successfully' : 'Operation completed successfully';
-                  } else {
-                    operationStatus = jobConclusion;
-                    details = 'Check job logs for details';
-                  }
-                }
-                
-                if (statusCounts[operationStatus]) {
-                  statusCounts[operationStatus]++;
-                } else {
-                  statusCounts[operationStatus] = 1;
-                }
-                
-                results.push({
-                  repository: repo.name,
-                  category: repo.category || 'other',
-                  operation_status: operationStatus,
-                  details: details,
-                  pr_url: '',
-                  pr_number: '',
-                  commit_sha: ''
-                });
-              }
-            }
-            
             console.log(`Collected ${results.length} results`);
             
-            // Generate execution summary
+            // Generate report
             const timestamp = new Date().toISOString();
             const totalRepos = repositories.length;
             
-            // Create markdown report
             const reportLines = [
               '# CAMARA Bulk Repository Changes - Execution Report',
               '',
@@ -418,7 +321,7 @@ jobs:
             reportLines.push('| Repository | Category | Operation Status | Details |');
             reportLines.push('|------------|----------|------------------|---------|');
             
-            // Sort results: failures/warnings first, then success, then by repository name  
+            // Sort results: issues first, then success
             results.sort((a, b) => {
               const aIsIssue = a.operation_status.includes('fail') || a.operation_status.includes('blocked') || a.operation_status.includes('no-') || a.operation_status.includes('error');
               const bIsIssue = b.operation_status.includes('fail') || b.operation_status.includes('blocked') || b.operation_status.includes('no-') || b.operation_status.includes('error');
@@ -443,52 +346,18 @@ jobs:
             }
             
             reportLines.push('');
-            reportLines.push('## Next Steps');
-            reportLines.push('');
-            
-            if (dryRun) {
-              reportLines.push('### After Dry Run Review:');
-              reportLines.push('- Review the operation statuses above to understand what will happen');
-              reportLines.push('- Address any issues (missing CODEOWNERS files, blocked operations)');
-              reportLines.push('- Run the same operation with dry_run disabled for live execution');
-            } else {
-              reportLines.push('### After Live Execution:');
-              reportLines.push('- ✅ **Successful operations**: Changes have been applied');
-              reportLines.push('- ⚠️ **Blocked/Warning operations**: May need manual intervention or different strategy');
-              reportLines.push('- ❌ **Failed operations**: Review job logs and resolve issues manually');
-              reportLines.push('- 🔄 **Re-run capability**: Target specific repositories or change strategy as needed');
-            }
-            
-            reportLines.push('');
             reportLines.push('---');
             reportLines.push('*Generated by CAMARA project-admin bulk workflow*');
             
             const markdownReport = reportLines.join('\n');
             
-            // Create CSV data
+            // Create CSV and JSON data
             let csvLines = ['Repository,Category,Operation Status,Details,PR Number,PR URL,Commit SHA'];
             for (const result of results) {
               csvLines.push(`"${result.repository}","${result.category}","${result.operation_status}","${result.details}","${result.pr_number}","${result.pr_url}","${result.commit_sha}"`);
             }
             const csvData = csvLines.join('\n');
             
-            // Write files using Node.js fs
-            const fs = require('fs');
-            
-            // Create results directory
-            if (!fs.existsSync('results')) {
-              fs.mkdirSync('results');
-            }
-            
-            // Write markdown report
-            fs.writeFileSync('results/bulk-changes-report.md', markdownReport);
-            console.log('✅ Created markdown report');
-            
-            // Write CSV data
-            fs.writeFileSync('results/bulk-changes-results.csv', csvData);
-            console.log('✅ Created CSV results');
-            
-            // Write JSON data for programmatic access
             const jsonReport = {
               metadata: {
                 timestamp: timestamp,
@@ -501,8 +370,17 @@ jobs:
               results: results
             };
             
+            // Write files
+            const fs = require('fs');
+            if (!fs.existsSync('results')) {
+              fs.mkdirSync('results');
+            }
+            
+            fs.writeFileSync('results/bulk-changes-report.md', markdownReport);
+            fs.writeFileSync('results/bulk-changes-results.csv', csvData);
             fs.writeFileSync('results/bulk-changes-data.json', JSON.stringify(jsonReport, null, 2));
-            console.log('✅ Created JSON data');
+            
+            console.log('✅ Created result files');
             
             // Add summary to job summary
             core.summary.addRaw(markdownReport);
@@ -540,25 +418,16 @@ jobs:
             summary += `**Results Collection**: ${collectionResult}\n\n`;
             
             if (totalRepos === 0) {
-              summary += `⚠️ No repositories matched the selection criteria.\n\n`;
-              summary += `**Check your filters:**\n`;
-              summary += `- Repository categories selected\n`;
-              summary += `- Repository name filters\n`;
-              summary += `- Excluded repositories list\n`;
+              summary += `⚠️ No repositories matched the selection criteria.\n`;
             } else {
-              summary += `📊 **Detailed results available in:**\n`;
-              summary += `- Job summary above (markdown report)\n`;
-              summary += `- Downloadable artifacts (CSV, JSON, markdown files)\n\n`;
+              summary += `📊 **Detailed results available in downloadable artifacts**\n\n`;
               
               if (dryRun) {
                 summary += `🧪 **This was a dry run** - no actual changes were made.\n`;
-                summary += `Review the detailed results and run with dry_run=false for live execution.\n`;
               } else {
                 summary += `✅ **Live execution completed**.\n`;
-                summary += `Check the detailed results for individual repository outcomes.\n`;
               }
             }
             
-            console.log(summary);
             core.summary.addRaw(summary);
             await core.summary.write();
