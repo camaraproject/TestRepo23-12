@@ -192,7 +192,10 @@ jobs:
               
               if (!repoInfo.data.has_wiki) {
                 console.log('✅ Wiki is already disabled');
-                core.exportVariable('status', 'no-change');
+                core.exportVariable('operation_status', 'no-change');
+                core.exportVariable('result_type', 'no-change');
+                core.exportVariable('details', 'Wiki already disabled');
+                core.exportVariable('action_taken', 'none');
                 return;
               }
               
@@ -210,13 +213,19 @@ jobs:
               
               if (hasWikiContent) {
                 console.log('⚠️ Wiki contains content - skipping disable for safety');
-                core.exportVariable('status', 'wiki-has-content');
+                core.exportVariable('operation_status', 'wiki-has-content');
+                core.exportVariable('result_type', 'warning');
+                core.exportVariable('details', 'Wiki has content - skipped for safety');
+                core.exportVariable('action_taken', 'skipped');
                 return;
               }
               
               if (${{ inputs.dry_run }}) {
                 console.log('🧪 DRY RUN: Would disable wiki (currently enabled but empty)');
-                core.exportVariable('status', 'would-disable-wiki');
+                core.exportVariable('operation_status', 'would-disable-wiki');
+                core.exportVariable('result_type', 'would-action');
+                core.exportVariable('details', 'Dry run: Would disable wiki');
+                core.exportVariable('action_taken', 'dry-run');
                 return;
               }
               
@@ -228,16 +237,35 @@ jobs:
                   has_wiki: false
                 });
                 console.log('✅ Wiki disabled successfully');
-                core.exportVariable('status', 'wiki-disabled');
+                core.exportVariable('operation_status', 'wiki-disabled');
+                core.exportVariable('result_type', 'success');
+                core.exportVariable('details', 'Wiki disabled successfully');
+                core.exportVariable('action_taken', 'wiki-disabled');
               } catch (updateError) {
                 if (updateError.status === 403) {
                   core.setFailed(`❌ Permission denied: Admin access required to disable wiki on ${owner}/${repo}`);
+                  core.exportVariable('operation_status', 'permission-denied');
+                  core.exportVariable('result_type', 'error');
+                  core.exportVariable('details', 'Permission denied: Admin access required');
+                  core.exportVariable('action_taken', 'failed');
                 } else if (updateError.status === 404) {
                   core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+                  core.exportVariable('operation_status', 'repo-not-found');
+                  core.exportVariable('result_type', 'error');
+                  core.exportVariable('details', 'Repository not found');
+                  core.exportVariable('action_taken', 'failed');
                 } else if (updateError.status === 422) {
                   core.setFailed(`❌ Cannot update repository settings - may be restricted by organization policies`);
+                  core.exportVariable('operation_status', 'update-restricted');
+                  core.exportVariable('result_type', 'error');
+                  core.exportVariable('details', 'Cannot update repository settings - restricted by organization policies');
+                  core.exportVariable('action_taken', 'failed');
                 } else {
                   core.setFailed(`❌ Failed to disable wiki: ${updateError.message} (HTTP ${updateError.status})`);
+                  core.exportVariable('operation_status', 'api-error');
+                  core.exportVariable('result_type', 'error');
+                  core.exportVariable('details', `Failed to disable wiki: ${updateError.message}`);
+                  core.exportVariable('action_taken', 'failed');
                 }
                 throw updateError;
               }
@@ -245,6 +273,10 @@ jobs:
             } catch (error) {
               if (!error.message.includes('Permission denied') && !error.message.includes('Failed to disable wiki')) {
                 core.setFailed(`❌ Wiki operation failed: ${error.message}`);
+                core.exportVariable('operation_status', 'unexpected-error');
+                core.exportVariable('result_type', 'error');
+                core.exportVariable('details', `Wiki operation failed: ${error.message}`);
+                core.exportVariable('action_taken', 'failed');
               }
             }
 
@@ -279,7 +311,7 @@ jobs:
                 
                 if (fileResponse.data.content) {
                   currentContent = Buffer.from(fileResponse.data.content, 'base64').toString('utf8');
-                  currentSha = fileResponse.data.sha;  // ← Store the SHA!
+                  currentSha = fileResponse.data.sha;
                   fileExists = true;
                 } else {
                   fileExists = false;
@@ -287,7 +319,10 @@ jobs:
               } catch (getError) {
                 if (getError.status === 404) {
                   core.warning(`Repository ${owner}/${repo} does not have a CODEOWNERS file`);
-                  core.exportVariable('status', 'no-codeowners-file');
+                  core.exportVariable('operation_status', 'no-codeowners-file');
+                  core.exportVariable('result_type', 'warning');
+                  core.exportVariable('details', 'No CODEOWNERS file found');
+                  core.exportVariable('action_taken', 'skipped');
                   return;
                 } else {
                   throw getError;
@@ -296,14 +331,20 @@ jobs:
               
               if (!fileExists) {
                 core.warning(`Repository ${owner}/${repo} does not have a CODEOWNERS file`);
-                core.exportVariable('status', 'no-codeowners-file');
+                core.exportVariable('operation_status', 'no-codeowners-file');
+                core.exportVariable('result_type', 'warning');
+                core.exportVariable('details', 'No CODEOWNERS file found');
+                core.exportVariable('action_taken', 'skipped');
                 return;
               }
               
               // Check if rule already exists
               if (currentContent.includes('/CHANGELOG.MD')) {
                 console.log('✅ CHANGELOG.MD rule already exists');
-                core.exportVariable('status', 'no-change');
+                core.exportVariable('operation_status', 'no-change');
+                core.exportVariable('result_type', 'no-change');
+                core.exportVariable('details', 'CHANGELOG.MD rule already exists');
+                core.exportVariable('action_taken', 'none');
                 return;
               }
               
@@ -314,7 +355,10 @@ jobs:
                 const dryRunStatus = commitStrategy === 'pull-request' ? 'would-create-pr' : 
                                    commitStrategy === 'direct-with-pr-fallback' ? 'would-commit-or-pr' :
                                    'would-commit-or-warn';
-                core.exportVariable('status', dryRunStatus);
+                core.exportVariable('operation_status', dryRunStatus);
+                core.exportVariable('result_type', 'would-action');
+                core.exportVariable('details', `Dry run: Would apply changes using ${commitStrategy} strategy`);
+                core.exportVariable('action_taken', 'dry-run');
                 return;
               }
               
@@ -334,7 +378,10 @@ jobs:
                   });
                   
                   console.log('✅ Direct commit successful');
-                  core.exportVariable('status', 'direct-commit');
+                  core.exportVariable('operation_status', 'direct-commit');
+                  core.exportVariable('result_type', 'success');
+                  core.exportVariable('details', `Direct commit successful (${directCommitResponse.data.commit.sha.substring(0, 7)})`);
+                  core.exportVariable('action_taken', 'direct-commit');
                   core.exportVariable('commit_sha', directCommitResponse.data.commit.sha);
                   return;
                   
@@ -344,7 +391,10 @@ jobs:
                       // Just warn and exit - no PR creation
                       console.log('⚠️ Direct commit blocked (likely branch protection) - operation skipped');
                       core.warning(`Repository ${owner}/${repo} has branch protection - direct commit not possible. Consider using pull-request strategy.`);
-                      core.exportVariable('status', 'direct-commit-blocked');
+                      core.exportVariable('operation_status', 'direct-commit-blocked');
+                      core.exportVariable('result_type', 'warning');
+                      core.exportVariable('details', 'Direct commit blocked by branch protection');
+                      core.exportVariable('action_taken', 'skipped');
                       return;
                     } else {
                       // direct-with-pr-fallback - continue to PR creation
@@ -357,12 +407,10 @@ jobs:
               }
               
               // Create pull request (either as primary strategy or fallback)
-              // Skip if we already handled direct-with-warning case above
               if (commitStrategy === 'direct-with-warning') {
                 return; // Should never reach here due to return above, but safety check
               }
               
-              // Create pull request (either as primary strategy or fallback)
               console.log('Creating pull request...');
               
               // Get base commit SHA
@@ -384,14 +432,14 @@ jobs:
                 sha: baseSha
               });
               
-              // Update file on feature branch (using the SHA from the original file)
+              // Update file on feature branch
               await github.rest.repos.createOrUpdateFileContents({
                 owner: owner,
                 repo: repo,
                 path: 'CODEOWNERS',
                 message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
                 content: Buffer.from(newContent).toString('base64'),
-                sha: currentSha,  // ← Use the SHA we stored earlier!
+                sha: currentSha,
                 branch: branchName
               });
               
@@ -415,19 +463,38 @@ jobs:
               });
               
               console.log(`✅ Pull request created: ${prResponse.data.html_url}`);
-              core.exportVariable('status', 'pr-created');
+              core.exportVariable('operation_status', 'pr-created');
+              core.exportVariable('result_type', 'success');
+              core.exportVariable('details', `Pull request created (#${prResponse.data.number})`);
+              core.exportVariable('action_taken', 'pull-request');
               core.exportVariable('pr_number', prResponse.data.number);
               core.exportVariable('pr_url', prResponse.data.html_url);
               
             } catch (error) {
               if (error.status === 403) {
                 core.setFailed(`❌ Permission denied: Insufficient permissions for ${owner}/${repo}`);
+                core.exportVariable('operation_status', 'permission-denied');
+                core.exportVariable('result_type', 'error');
+                core.exportVariable('details', 'Permission denied: Insufficient permissions');
+                core.exportVariable('action_taken', 'failed');
               } else if (error.status === 404) {
                 core.setFailed(`❌ Repository not found: ${owner}/${repo}`);
+                core.exportVariable('operation_status', 'repo-not-found');
+                core.exportVariable('result_type', 'error');
+                core.exportVariable('details', 'Repository not found');
+                core.exportVariable('action_taken', 'failed');
               } else if (error.status === 422 && error.message.includes('Reference already exists')) {
                 core.setFailed(`❌ Branch conflict: A similar update may already be in progress`);
+                core.exportVariable('operation_status', 'branch-conflict');
+                core.exportVariable('result_type', 'error');
+                core.exportVariable('details', 'Branch conflict: Similar update may be in progress');
+                core.exportVariable('action_taken', 'failed');
               } else {
                 core.setFailed(`❌ Failed to apply changes: ${error.message} (HTTP ${error.status})`);
+                core.exportVariable('operation_status', 'api-error');
+                core.exportVariable('result_type', 'error');
+                core.exportVariable('details', `Failed to apply changes: ${error.message}`);
+                core.exportVariable('action_taken', 'failed');
               }
               throw error;
             }
@@ -466,6 +533,42 @@ jobs:
           
           git push origin ${{ inputs.default_branch }}
 
+      - name: Determine result metadata
+        if: always()
+        run: |
+          # Set default values if not already set by operation steps
+          RESULT_TYPE="${{ env.result_type }}"
+          DETAILS="${{ env.details }}"
+          ACTION_TAKEN="${{ env.action_taken }}"
+          OPERATION_STATUS="${{ env.operation_status }}"
+          
+          # Handle case where operation failed before setting result variables
+          if [ -z "$RESULT_TYPE" ]; then
+            if [ "${{ job.status }}" = "failure" ]; then
+              RESULT_TYPE="error"
+              DETAILS="Operation failed with error"
+              ACTION_TAKEN="failed"
+              OPERATION_STATUS="job-failed"
+            else
+              RESULT_TYPE="unknown"
+              DETAILS="Operation completed with unknown status"
+              ACTION_TAKEN="unknown"
+              OPERATION_STATUS="unknown"
+            fi
+          fi
+          
+          # Export final values (no emoji logic here - handled by bulk workflow)
+          echo "FINAL_RESULT_TYPE=$RESULT_TYPE" >> $GITHUB_ENV
+          echo "FINAL_DETAILS=$DETAILS" >> $GITHUB_ENV
+          echo "FINAL_ACTION_TAKEN=$ACTION_TAKEN" >> $GITHUB_ENV
+          echo "FINAL_OPERATION_STATUS=$OPERATION_STATUS" >> $GITHUB_ENV
+          
+          echo "Result metadata determined:"
+          echo "  Result Type: $RESULT_TYPE"
+          echo "  Details: $DETAILS"
+          echo "  Action Taken: $ACTION_TAKEN"
+          echo "  Operation Status: $OPERATION_STATUS"
+
       - name: Create result file for collection
         if: always()
         run: |
@@ -476,14 +579,16 @@ jobs:
           PR_NUMBER="${{ env.pr_number }}"
           PR_URL="${{ env.pr_url }}"
           COMMIT_SHA="${{ env.commit_sha }}"
-          STATUS="${{ env.status }}"
           
           # Create uniquely named file to prevent conflicts during collection
           cat > /tmp/results/result-${{ inputs.repository_name }}.json << EOF
           {
             "repository": "${{ inputs.repository_name }}",
             "operation": "${{ inputs.operation }}",
-            "status": "${STATUS:-unknown}",
+            "result_type": "${{ env.FINAL_RESULT_TYPE }}",
+            "details": "${{ env.FINAL_DETAILS }}",
+            "operation_status": "${{ env.FINAL_OPERATION_STATUS }}",
+            "action_taken": "${{ env.FINAL_ACTION_TAKEN }}",
             "dry_run": ${{ inputs.dry_run }},
             "commit_strategy": "${{ inputs.commit_strategy }}",
             "pr_number": "${PR_NUMBER:-}",
@@ -506,42 +611,36 @@ jobs:
 
       - name: Create summary
         run: |
+          # Determine emoji for display (worker-level only, not stored in results)
+          case "${{ env.FINAL_RESULT_TYPE }}" in
+            "success") DISPLAY_EMOJI="✅" ;;
+            "no-change") DISPLAY_EMOJI="📊" ;;
+            "warning") DISPLAY_EMOJI="⚠️" ;;
+            "would-action") DISPLAY_EMOJI="🧪" ;;
+            "error") DISPLAY_EMOJI="❌" ;;
+            *) DISPLAY_EMOJI="❓" ;;
+          esac
+          
           echo "## Repository: ${{ inputs.repository_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Operation**: ${{ inputs.operation }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Status**: ${{ env.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Result**: $DISPLAY_EMOJI ${{ env.FINAL_RESULT_TYPE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Details**: ${{ env.FINAL_DETAILS }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action Taken**: ${{ env.FINAL_ACTION_TAKEN }}" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
           
           if [ "${{ inputs.operation }}" == "add-changelog-codeowners" ]; then
-            echo "**Method**: ${{ inputs.commit_strategy }}" >> $GITHUB_STEP_SUMMARY
-            if [ "${{ inputs.dry_run }}" == "true" ]; then
-              echo "**Note**: Dry run - no changes applied" >> $GITHUB_STEP_SUMMARY
-            else
-              case "${{ env.status }}" in
-                "direct-commit")
-                  echo "**Result**: Direct commit successful" >> $GITHUB_STEP_SUMMARY
-                  echo "**Commit**: ${{ env.commit_sha }}" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                "direct-commit-blocked")
-                  echo "**Result**: ⚠️ Direct commit blocked by branch protection" >> $GITHUB_STEP_SUMMARY
-                  echo "**Note**: Repository requires pull request workflow" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                "pr-created")
-                  echo "**Result**: Pull request created" >> $GITHUB_STEP_SUMMARY
-                  echo "**PR**: #${{ env.pr_number }} - ${{ env.pr_url }}" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                "no-change")
-                  echo "**Note**: CHANGELOG.MD rule already exists" >> $GITHUB_STEP_SUMMARY
-                  ;;
-                "no-codeowners-file")
-                  echo "**Note**: ⚠️ No CODEOWNERS file found" >> $GITHUB_STEP_SUMMARY
-                  ;;
-              esac
+            echo "**Commit Strategy**: ${{ inputs.commit_strategy }}" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -n "${{ env.pr_number }}" ]; then
+              echo "**Pull Request**: #${{ env.pr_number }} - ${{ env.pr_url }}" >> $GITHUB_STEP_SUMMARY
             fi
-          else
-            echo "**Has Changes**: ${{ steps.check-changes.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
-            if [ "${{ inputs.dry_run }}" == "true" ]; then
-              echo "**Note**: Dry run - no changes committed" >> $GITHUB_STEP_SUMMARY
-            elif [ "${{ steps.check-changes.outputs.has_changes }}" == "true" ]; then
-              echo "**Note**: Changes committed and pushed" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -n "${{ env.commit_sha }}" ]; then
+              echo "**Commit**: ${{ env.commit_sha }}" >> $GITHUB_STEP_SUMMARY
             fi
+          fi
+          
+          if [[ "${{ env.FINAL_RESULT_TYPE }}" == "warning" || "${{ env.FINAL_RESULT_TYPE }}" == "error" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **This result requires attention**" >> $GITHUB_STEP_SUMMARY
           fi
