@@ -196,22 +196,16 @@ jobs:
         repository: ${{ fromJson(needs.get-repositories.outputs.repositories) }}
       max-parallel: 5
       fail-fast: false
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout workflows
-        uses: actions/checkout@v4
-
-      - name: Execute repository changes
-        uses: ./.github/workflows/project-admin-repository-worker.yml
-        with:
-          repository_name: ${{ matrix.repository.name }}
-          repository_full_name: ${{ matrix.repository.full_name }}
-          default_branch: ${{ matrix.repository.default_branch }}
-          operation: ${{ github.event.inputs.operation }}
-          dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
-          commit_strategy: ${{ github.event.inputs.commit_strategy }}
-        secrets:
-          CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
+    uses: ./.github/workflows/project-admin-repository-worker.yml
+    with:
+      repository_name: ${{ matrix.repository.name }}
+      repository_full_name: ${{ matrix.repository.full_name }}
+      default_branch: ${{ matrix.repository.default_branch }}
+      operation: ${{ github.event.inputs.operation }}
+      dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
+      commit_strategy: ${{ github.event.inputs.commit_strategy }}
+    secrets:
+      CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 
   summary:
     needs: [get-repositories, execute-changes]
