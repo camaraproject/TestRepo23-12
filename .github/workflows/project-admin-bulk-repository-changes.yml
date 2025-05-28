@@ -65,7 +65,6 @@ on:
         type: choice
         options:
           - 'pull-request'
-          - 'direct-with-pr-fallback'
           - 'direct-with-warning'
         default: 'pull-request'
 
@@ -207,48 +206,274 @@ jobs:
     secrets:
       CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
 
-  summary:
+  execute-changes:
+    needs: get-repositories
+    if: fromJson(needs.get-repositories.outputs.total_count) > 0
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.get-repositories.outputs.repositories) }}
+      max-parallel: 5
+      fail-fast: false
+    uses: ./.github/workflows/project-admin-repository-worker.yml
+    with:
+      repository_name: ${{ matrix.repository.name }}
+      repository_full_name: ${{ matrix.repository.full_name }}
+      default_branch: ${{ matrix.repository.default_branch }}
+      operation: ${{ github.event.inputs.operation }}
+      dry_run: ${{ fromJson(github.event.inputs.dry_run) }}
+      commit_strategy: ${{ github.event.inputs.commit_strategy }}
+    secrets:
+      CAMARA_TOKEN: ${{ secrets.CAMARA_TOKEN }}
+
+  collect-results:
     needs: [get-repositories, execute-changes]
+    if: always() && fromJson(needs.get-repositories.outputs.total_count) > 0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect and summarize results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repositories = JSON.parse('${{ needs.get-repositories.outputs.repositories }}');
+            const operation = '${{ github.event.inputs.operation }}';
+            const dryRun = ${{ fromJson(github.event.inputs.dry_run) }};
+            const commitStrategy = '${{ github.event.inputs.commit_strategy }}' || 'N/A';
+            
+            console.log('Collecting results from matrix jobs...');
+            
+            // Get all jobs from this workflow run
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId
+            });
+            
+            console.log(`Found ${jobs.data.jobs.length} jobs`);
+            
+            // Find execute-changes jobs (matrix jobs)
+            const matrixJobs = jobs.data.jobs.filter(job => 
+              job.name.includes('execute-changes') && 
+              job.name.includes('(')  // Matrix jobs have (repository.name) in the name
+            );
+            
+            console.log(`Found ${matrixJobs.length} matrix jobs`);
+            
+            // Create results summary
+            let results = [];
+            let statusCounts = {
+              'success': 0,
+              'failure': 0,
+              'cancelled': 0,
+              'skipped': 0
+            };
+            
+            for (const repo of repositories) {
+              // Find the corresponding matrix job
+              const matrixJob = matrixJobs.find(job => 
+                job.name.includes(`(${repo.name})`) || job.name.includes(repo.name)
+              );
+              
+              let status = 'unknown';
+              let conclusion = 'unknown';
+              let details = '';
+              
+              if (matrixJob) {
+                status = matrixJob.status;
+                conclusion = matrixJob.conclusion || 'in_progress';
+                
+                // Count conclusions
+                if (statusCounts[conclusion] !== undefined) {
+                  statusCounts[conclusion]++;
+                } else {
+                  statusCounts[conclusion] = 1;
+                }
+                
+                // Determine details based on conclusion
+                switch (conclusion) {
+                  case 'success':
+                    details = dryRun ? 'Dry run completed' : 'Operation completed successfully';
+                    break;
+                  case 'failure':
+                    details = 'Operation failed - check job logs';
+                    break;
+                  case 'cancelled':
+                    details = 'Operation was cancelled';
+                    break;
+                  case 'skipped':
+                    details = 'Operation was skipped';
+                    break;
+                  default:
+                    details = `Status: ${conclusion}`;
+                }
+              }
+              
+              results.push({
+                repository: repo.name,
+                category: repo.category || 'other',
+                status: conclusion,
+                details: details,
+                job_url: matrixJob ? matrixJob.html_url : 'N/A'
+              });
+            }
+            
+            // Generate execution summary
+            const timestamp = new Date().toISOString();
+            const totalRepos = repositories.length;
+            
+            // Create markdown report
+            let markdownReport = `# CAMARA Bulk Repository Changes - Execution Report
+            
+            **Execution Time:** ${timestamp}
+            **Operation:** ${operation}
+            **Commit Strategy:** ${commitStrategy}
+            **Mode:** ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}
+            **Total Repositories:** ${totalRepos}
+            
+            ## Summary Statistics
+            
+            | Status | Count | Percentage |
+            |--------|-------|------------|`;
+            
+            for (const [status, count] of Object.entries(statusCounts)) {
+              const percentage = totalRepos > 0 ? ((count / totalRepos) * 100).toFixed(1) : '0.0';
+              const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : status === 'cancelled' ? '⏹️' : '⏭️';
+              markdownReport += `\n| ${emoji} ${status} | ${count} | ${percentage}% |`;
+            }
+            
+            markdownReport += `
+            
+            ## Repository Results
+            
+            | Repository | Category | Status | Details |
+            |------------|----------|--------|---------|`;
+            
+            // Sort results by status (failures first, then success)
+            results.sort((a, b) => {
+              if (a.status === 'failure' && b.status !== 'failure') return -1;
+              if (a.status !== 'failure' && b.status === 'failure') return 1;
+              return a.repository.localeCompare(b.repository);
+            });
+            
+            for (const result of results) {
+              const emoji = result.status === 'success' ? '✅' : 
+                           result.status === 'failure' ? '❌' : 
+                           result.status === 'cancelled' ? '⏹️' : '⏭️';
+              markdownReport += `\n| ${result.repository} | ${result.category} | ${emoji} ${result.status} | ${result.details} |`;
+            }
+            
+            markdownReport += `
+            
+            ## Next Steps
+            
+            ${dryRun ? `
+            ### After Dry Run Review:
+            - Review the results above to understand which repositories will be affected
+            - Check any failed operations and resolve issues
+            - Run the same operation with dry_run disabled for live execution
+            ` : `
+            ### After Live Execution:
+            - ✅ **Successful operations**: Changes have been applied
+            - ❌ **Failed operations**: Review job logs and resolve issues manually
+            - 🔄 **Re-run capability**: Failed repositories can be targeted specifically for retry
+            `}
+            
+            ---
+            *Generated by CAMARA project-admin bulk workflow*
+            `;
+            
+            // Also create CSV data
+            let csvData = 'Repository,Category,Status,Details,Job URL\n';
+            for (const result of results) {
+              csvData += `"${result.repository}","${result.category}","${result.status}","${result.details}","${result.job_url}"\n`;
+            }
+            
+            // Write files using Node.js fs
+            const fs = require('fs');
+            
+            // Create results directory
+            if (!fs.existsSync('results')) {
+              fs.mkdirSync('results');
+            }
+            
+            // Write markdown report
+            fs.writeFileSync('results/bulk-changes-report.md', markdownReport);
+            console.log('✅ Created markdown report');
+            
+            // Write CSV data
+            fs.writeFileSync('results/bulk-changes-results.csv', csvData);
+            console.log('✅ Created CSV results');
+            
+            // Write JSON data for programmatic access
+            const jsonReport = {
+              metadata: {
+                timestamp: timestamp,
+                operation: operation,
+                commit_strategy: commitStrategy,
+                dry_run: dryRun,
+                total_repositories: totalRepos
+              },
+              summary: statusCounts,
+              results: results
+            };
+            
+            fs.writeFileSync('results/bulk-changes-data.json', JSON.stringify(jsonReport, null, 2));
+            console.log('✅ Created JSON data');
+            
+            // Add summary to job summary
+            core.summary.addRaw(markdownReport);
+            await core.summary.write();
+            
+            console.log(`📊 Results summary completed - processed ${totalRepos} repositories`);
+
+      - name: Upload results artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bulk-changes-results-${{ github.run_number }}
+          path: results/
+          retention-days: 30
+
+  summary:
+    needs: [get-repositories, execute-changes, collect-results]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Generate summary
+      - name: Final summary
         uses: actions/github-script@v7
         with:
           script: |
             const totalRepos = ${{ needs.get-repositories.outputs.total_count }};
             const operation = '${{ github.event.inputs.operation }}';
             const dryRun = ${{ fromJson(github.event.inputs.dry_run) }};
+            const executionResult = '${{ needs.execute-changes.result }}';
+            const collectionResult = '${{ needs.collect-results.result }}';
             
-            // Category selections
-            const includeSandbox = ${{ fromJson(github.event.inputs.include_sandbox_repos) }};
-            const includeIncubating = ${{ fromJson(github.event.inputs.include_incubating_repos) }};
-            const includeWorkingGroup = ${{ fromJson(github.event.inputs.include_working_group_repos) }};
-            const includeOther = ${{ fromJson(github.event.inputs.include_other_repos) }};
+            let summary = `## Bulk Repository Changes Summary\n\n`;
+            summary += `**Operation**: ${operation}\n`;
+            summary += `**Mode**: ${dryRun ? 'DRY RUN' : 'LIVE'}\n`;
+            summary += `**Total Repositories**: ${totalRepos}\n`;
+            summary += `**Execution Status**: ${executionResult}\n`;
+            summary += `**Results Collection**: ${collectionResult}\n\n`;
             
-            let selectedCategories = [];
-            if (includeSandbox) selectedCategories.push('Sandbox API');
-            if (includeIncubating) selectedCategories.push('Incubating API');
-            if (includeWorkingGroup) selectedCategories.push('Working Group');
-            if (includeOther) selectedCategories.push('Other');
+            if (totalRepos === 0) {
+              summary += `⚠️ No repositories matched the selection criteria.\n\n`;
+              summary += `**Check your filters:**\n`;
+              summary += `- Repository categories selected\n`;
+              summary += `- Repository name filters\n`;
+              summary += `- Excluded repositories list\n`;
+            } else {
+              summary += `📊 **Detailed results available in:**\n`;
+              summary += `- Job summary above (markdown report)\n`;
+              summary += `- Downloadable artifacts (CSV, JSON, markdown files)\n\n`;
+              
+              if (dryRun) {
+                summary += `🧪 **This was a dry run** - no actual changes were made.\n`;
+                summary += `Review the detailed results and run with dry_run=false for live execution.\n`;
+              } else {
+                summary += `✅ **Live execution completed**.\n`;
+                summary += `Check the detailed results for individual repository outcomes.\n`;
+              }
+            }
             
-            const summary = `
-            ## Bulk Repository Changes Summary
-            
-            **Operation**: ${operation}
-            **Mode**: ${dryRun ? 'DRY RUN' : 'LIVE'}
-            **Total Repositories Processed**: ${totalRepos}
-            **Repository Categories**: ${selectedCategories.join(', ')}
-            **Execution Status**: ${{ needs.execute-changes.result }}
-            
-            ${dryRun ? '⚠️ This was a dry run - no actual changes were made.' : '✅ Changes have been applied to repositories.'}
-            
-            ### Categories Processed:
-            ${includeSandbox ? '✅' : '❌'} Sandbox API Repositories
-            ${includeIncubating ? '✅' : '❌'} Incubating API Repositories  
-            ${includeWorkingGroup ? '✅' : '❌'} Working Group Repositories
-            ${includeOther ? '✅' : '❌'} Other Repositories
-            `;
-            
+            console.log(summary);
             core.summary.addRaw(summary);
             await core.summary.write();

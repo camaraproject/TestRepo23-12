@@ -73,11 +73,13 @@ This progressive approach ensures:
    - Check/uncheck Other Repositories
 4. For CODEOWNERS operations, select commit strategy:
    - **pull-request**: Always create pull requests (safest, default)
-   - **direct-with-pr-fallback**: Try direct commit, use PR if blocked by branch protection
+   - **direct-with-warning**: Try direct commit, issue warning if blocked (no PR created)
 5. Configure additional repository filters if needed
 6. Start with dry-run mode enabled
 7. Review results across selected repositories
-8. Re-run with dry-run disabled for live execution
+8. **Download results artifacts** for detailed analysis and record-keeping
+9. Re-run with dry-run disabled for live execution
+10. **Monitor final results** and download execution artifacts for audit trail
 
 **Category Selection Examples:**
 - **API-only changes**: Select only Sandbox and Incubating API repositories
@@ -87,7 +89,12 @@ This progressive approach ensures:
 
 **Commit Strategy Guidance:**
 - **pull-request**: Recommended for production use, ensures proper review process
-- **direct-with-pr-fallback**: Faster for repositories without branch protection, but falls back gracefully
+- **direct-with-warning**: Fast discovery mode, good for identifying which repositories allow direct commits
+
+**Recommended Workflow:**
+1. **Discovery Phase**: Run with `direct-with-warning` to identify repositories that allow direct commits
+2. **Selective Application**: Re-run with `pull-request` strategy for repositories that were blocked
+3. **Future Operations**: Use appropriate strategy based on repository protection status
 
 ## Available Operations
 
@@ -106,20 +113,20 @@ This progressive approach ensures:
 **add-changelog-codeowners:**
 - ✅ Two commit strategies available:
   - **pull-request** (default): Always creates pull requests for changes
-  - **direct-with-pr-fallback**: Attempts direct commit, falls back to PR if blocked by branch protection
+  - **direct-with-warning**: Attempts direct commit, issues warning if blocked (no PR created)
 - ✅ Smart detection: Skips if CHANGELOG.MD rule already exists
 - ✅ Only modifies existing CODEOWNERS files (won't create new ones)
 - ✅ Preserves existing CODEOWNERS content
-- ✅ Creates feature branch with unique timestamp-based naming
-- ✅ Generates descriptive pull requests with proper context
+- ✅ Creates feature branch with unique timestamp-based naming (for PR strategy)
+- ✅ Generates descriptive pull requests with proper context (for PR strategy)
 - ⚠️ Issues warning if CODEOWNERS file is missing (requires investigation)
 
 **Status Codes:**
 - `no-change`: CHANGELOG.MD rule already exists
 - `direct-commit`: Successfully committed directly to default branch
-- `pr-created`: Pull request created (pull-request strategy)
-- `pr-fallback`: Direct commit failed, pull request created as fallback
-- `would-commit-or-pr`: Dry run would attempt direct commit with PR fallback
+- `direct-commit-blocked`: Direct commit blocked by branch protection (warning issued)
+- `pr-created`: Pull request created
+- `would-commit-or-warn`: Dry run would attempt direct commit with warning fallback
 - `would-create-pr`: Dry run would create pull request
 - `no-codeowners-file`: Repository missing CODEOWNERS file (skipped with warning)
 
@@ -184,6 +191,45 @@ Workflows request minimal required permissions:
 4. **Monitor execution**: Watch for failures and address them before continuing
 5. **Verify results**: Check a few repositories manually after bulk operations
 
+## Results and Reporting
+
+### **Bulk Operation Results**
+Every bulk operation generates comprehensive results that are available in multiple formats:
+
+**Job Summary (GitHub UI):**
+- Real-time progress during execution
+- Final summary with statistics and detailed repository table
+- Direct links to individual repository operation logs
+
+**Downloadable Artifacts:**
+- **`bulk-changes-report.md`**: Complete markdown report with tables and statistics
+- **`bulk-changes-results.csv`**: CSV data for spreadsheet analysis
+- **`bulk-changes-data.json`**: JSON format for programmatic processing
+
+**Results Include:**
+- Repository name and category classification
+- Operation status (success/failure/cancelled/skipped)
+- Detailed status explanations
+- Links to individual job logs for troubleshooting
+- Summary statistics with percentages
+- Execution metadata (timestamp, operation type, mode)
+
+### **Artifact Retention**
+- Results artifacts are retained for **30 days**
+- Download from workflow run "Artifacts" section
+- Unique naming: `bulk-changes-results-{run-number}`
+
+### **Results Analysis**
+**Success/Failure Tracking:**
+- Clear visual indicators (✅❌⏹️⏭️) in summary tables
+- Failures listed first for easy identification
+- Percentage breakdowns for quick assessment
+
+**Next Steps Guidance:**
+- **After dry runs**: Review what will change, then run live
+- **After failures**: Specific guidance on manual intervention needed
+- **Re-run capability**: Target specific repositories that failed
+
 ## Troubleshooting
 
 **Common Issues:**
@@ -208,8 +254,8 @@ Workflows request minimal required permissions:
 **CODEOWNERS Operation Status Codes:**
 - `no-change`: CHANGELOG.MD rule already exists
 - `direct-commit`: Successfully committed directly to default branch
-- `pr-created`: Pull request created (pull-request strategy)
-- `pr-fallback`: Direct commit failed, pull request created as fallback
-- `would-commit-or-pr`: Dry run would attempt direct commit with PR fallback
+- `direct-commit-blocked`: Direct commit blocked by branch protection (warning issued)
+- `pr-created`: Pull request created
+- `would-commit-or-warn`: Dry run would attempt direct commit with warning fallback
 - `would-create-pr`: Dry run would create pull request
 - `no-codeowners-file`: Repository missing CODEOWNERS file (operation skipped with warning)
