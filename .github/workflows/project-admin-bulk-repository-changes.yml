@@ -66,6 +66,7 @@ on:
         options:
           - 'pull-request'
           - 'direct-with-pr-fallback'
+          - 'direct-with-warning'
         default: 'pull-request'
 
 jobs:
