@@ -290,9 +290,10 @@ jobs:
             const defaultBranch = '${{ inputs.default_branch }}';
             const commitStrategy = '${{ inputs.commit_strategy }}';
             
-            const changelogLines = `# The following line ensures that the release-management_reviewers team will automatically added as reviewers
-            # if a pull requests is changing the CHANGELOG.MD (aka "release PR") and that such PRs can only be merged with an approval from a team member.
+            const changelogLines = `# The following lines ensure that the release-management_reviewers team will automatically added as reviewers
+            # if a pull requests is changing the CHANGELOG file (aka "release PR") and that such PRs can only be merged with an approval from a team member.
             /CHANGELOG.MD @camaraproject/release-management_reviewers
+            /CHANGELOG.md @camaraproject/release-management_reviewers
             `;
             
             try {
@@ -338,12 +339,12 @@ jobs:
                 return;
               }
               
-              // Check if rule already exists
-              if (currentContent.includes('/CHANGELOG.MD')) {
-                console.log('✅ CHANGELOG.MD rule already exists');
+              // Check if rule already exists (check for both uppercase and lowercase variants)
+              if (currentContent.includes('/CHANGELOG.MD') || currentContent.includes('/CHANGELOG.md')) {
+                console.log('✅ CHANGELOG rule already exists');
                 core.exportVariable('operation_status', 'no-change');
                 core.exportVariable('result_type', 'no-change');
-                core.exportVariable('details', 'CHANGELOG.MD rule already exists');
+                core.exportVariable('details', 'CHANGELOG rule already exists');
                 core.exportVariable('action_taken', 'none');
                 return;
               }
@@ -357,7 +358,7 @@ jobs:
                                    'would-commit-or-warn';
                 core.exportVariable('operation_status', dryRunStatus);
                 core.exportVariable('result_type', 'would-action');
-                core.exportVariable('details', `Dry run: Would apply changes using ${commitStrategy} strategy`);
+                core.exportVariable('details', `Dry run: Would add CHANGELOG files using ${commitStrategy} strategy`);
                 core.exportVariable('action_taken', 'dry-run');
                 return;
               }
@@ -371,7 +372,7 @@ jobs:
                     owner: owner,
                     repo: repo,
                     path: 'CODEOWNERS',
-                    message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
+                    message: 'chore: add CHANGELOG files to CODEOWNERS for release management\n\nApplied via project-admin workflow',
                     content: Buffer.from(newContent).toString('base64'),
                     sha: currentSha,
                     branch: defaultBranch
@@ -380,7 +381,7 @@ jobs:
                   console.log('✅ Direct commit successful');
                   core.exportVariable('operation_status', 'direct-commit');
                   core.exportVariable('result_type', 'success');
-                  core.exportVariable('details', `Direct commit successful (${directCommitResponse.data.commit.sha.substring(0, 7)})`);
+                  core.exportVariable('details', `Direct commit successful - added CHANGELOG files (${directCommitResponse.data.commit.sha.substring(0, 7)})`);
                   core.exportVariable('action_taken', 'direct-commit');
                   core.exportVariable('commit_sha', directCommitResponse.data.commit.sha);
                   return;
@@ -437,7 +438,7 @@ jobs:
                 owner: owner,
                 repo: repo,
                 path: 'CODEOWNERS',
-                message: 'chore: add CHANGELOG.MD to CODEOWNERS for release management\n\nApplied via project-admin workflow',
+                message: 'chore: add CHANGELOG files to CODEOWNERS for release management\n\nApplied via project-admin workflow',
                 content: Buffer.from(newContent).toString('base64'),
                 sha: currentSha,
                 branch: branchName
@@ -447,17 +448,20 @@ jobs:
               const prResponse = await github.rest.pulls.create({
                 owner: owner,
                 repo: repo,
-                title: 'chore: add CHANGELOG.MD to CODEOWNERS for release management',
+                title: 'chore: add CHANGELOG files to CODEOWNERS for release management',
                 head: branchName,
                 base: defaultBranch,
                 body: `## CAMARA Project Admin Update
               
-              This pull request adds the CHANGELOG.MD file to CODEOWNERS to ensure that:
+              This pull request adds CHANGELOG files to CODEOWNERS to ensure that:
               - The release-management_reviewers team is automatically added as reviewers for release PRs
-              - Release PRs (those changing CHANGELOG.MD) require approval from the release management team
+              - Release PRs (those changing CHANGELOG files) require approval from the release management team
               
               **Changes:**
               - Added \`/CHANGELOG.MD @camaraproject/release-management_reviewers\` to CODEOWNERS
+              - Added \`/CHANGELOG.md @camaraproject/release-management_reviewers\` to CODEOWNERS
+              
+              This covers both uppercase and lowercase variants of the changelog filename.
               
               🤖 Generated by project-admin workflow`
               });
@@ -465,7 +469,7 @@ jobs:
               console.log(`✅ Pull request created: ${prResponse.data.html_url}`);
               core.exportVariable('operation_status', 'pr-created');
               core.exportVariable('result_type', 'success');
-              core.exportVariable('details', `Pull request created (#${prResponse.data.number})`);
+              core.exportVariable('details', `Pull request created for CHANGELOG files (#${prResponse.data.number})`);
               core.exportVariable('action_taken', 'pull-request');
               core.exportVariable('pr_number', prResponse.data.number);
               core.exportVariable('pr_url', prResponse.data.html_url);
