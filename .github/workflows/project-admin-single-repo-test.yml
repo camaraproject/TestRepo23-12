@@ -182,19 +182,25 @@ jobs:
             const emoji = emojiMap[resultType] || '❓';
             const needsAttention = requiresAttention(resultType);
             
+            // Get workflow inputs
+            const dryRun = ${{ fromJson(github.event.inputs.dry_run) }};
+            const operation = '${{ github.event.inputs.operation }}';
+            const repoName = '${{ github.event.inputs.repository_name }}';
+            const commitStrategy = '${{ github.event.inputs.commit_strategy }}';
+            
             // Build detailed summary
             let summary = `# Single Repository Test Result\n\n`;
             summary += `## ${emoji} ${resultType.toUpperCase()}\n\n`;
-            summary += `**Repository**: ${{ github.event.inputs.repository_name }}\n`;
-            summary += `**Operation**: ${{ github.event.inputs.operation }}\n`;
-            summary += `**Mode**: ${{ fromJson(github.event.inputs.dry_run) ? 'DRY RUN' : 'LIVE EXECUTION' }}\n`;
+            summary += `**Repository**: ${repoName}\n`;
+            summary += `**Operation**: ${operation}\n`;
+            summary += `**Mode**: ${dryRun ? 'DRY RUN' : 'LIVE EXECUTION'}\n`;
             summary += `**Result Type**: ${emoji} ${resultType}\n`;
             summary += `**Details**: ${details}\n`;
             summary += `**Action Taken**: ${actionTaken}\n`;
             
             // Add operation-specific details
-            if ('${{ github.event.inputs.operation }}' === 'add-changelog-codeowners') {
-              summary += `**Commit Strategy**: ${{ github.event.inputs.commit_strategy }}\n`;
+            if (operation === 'add-changelog-codeowners') {
+              summary += `**Commit Strategy**: ${commitStrategy}\n`;
             }
             
             // Add PR/commit information if available
@@ -216,12 +222,12 @@ jobs:
             // Add next steps based on result
             summary += `## Next Steps\n\n`;
             
-            if (resultType === 'would-action' && '${{ fromJson(github.event.inputs.dry_run) }}') {
+            if (resultType === 'would-action' && dryRun) {
               summary += `1. **Review the dry run results** - The operation would have succeeded\n`;
               summary += `2. **Run in live mode** - Re-run this test with dry-run disabled\n`;
               summary += `3. **Proceed to bulk execution** - Run bulk dry-run on all repositories\n`;
               summary += `4. **Execute bulk changes** - Run bulk live execution if satisfied\n`;
-            } else if (resultType === 'success' && !${{ fromJson(github.event.inputs.dry_run) }}) {
+            } else if (resultType === 'success' && !dryRun) {
               summary += `1. **Verify changes** - Check the repository for applied changes\n`;
               summary += `2. **Test bulk dry-run** - Run bulk operation on all repositories in dry-run mode\n`;
               summary += `3. **Execute bulk changes** - Run bulk live execution if satisfied\n`;
@@ -249,8 +255,8 @@ jobs:
             
             // Also log key information
             console.log('=== Test Result Summary ===');
-            console.log(`Repository: ${{ github.event.inputs.repository_name }}`);
-            console.log(`Operation: ${{ github.event.inputs.operation }}`);
+            console.log(`Repository: ${repoName}`);
+            console.log(`Operation: ${operation}`);
             console.log(`Result: ${emoji} ${resultType}`);
             console.log(`Details: ${details}`);
             console.log(`Action Taken: ${actionTaken}`);
